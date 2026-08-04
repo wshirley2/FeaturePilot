@@ -7,6 +7,8 @@ from .edit import EditFileTool
 from .glob_tool import GlobTool
 from .grep import GrepTool
 from .agent import AgentTool
+from .now import NowTool
+from .fetch import FetchUrlTool
 
 ALL_TOOLS = [
     BashTool(),
@@ -16,6 +18,8 @@ ALL_TOOLS = [
     GlobTool(),
     GrepTool(),
     AgentTool(),
+    NowTool(),
+    FetchUrlTool()
 ]
 
 

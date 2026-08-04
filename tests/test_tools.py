@@ -7,7 +7,7 @@ from corecoder.tools import ALL_TOOLS, get_tool
 
 
 def test_tool_count():
-    assert len(ALL_TOOLS) == 7
+    assert len(ALL_TOOLS) == 9
 
 
 def test_all_tools_have_valid_schema():
@@ -302,3 +302,8 @@ def test_agent_tool_schema():
     s = agent_t.schema()
     assert s["function"]["name"] == "agent"
     assert "task" in s["function"]["parameters"]["properties"]
+
+def test_fetch_rejects_non_http():
+    fetch = get_tool("fetch_url")
+    r = fetch.execute(url="file:///etc/passwd")
+    assert "only http" in r

@@ -37,8 +37,11 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        # load .env if present (won't override existing env vars)
-        _load_dotenv()
+        # Load .env if present (won't override existing env vars). Tests and
+        # embedding applications can opt out when they need strict isolation.
+        load_dotenv = os.getenv("CORECODER_LOAD_DOTENV", "1").lower()
+        if load_dotenv not in {"0", "false", "no", "off"}:
+            _load_dotenv()
         # pick up common env vars automatically
         api_key = (
             os.getenv("CORECODER_API_KEY")
