@@ -28,3 +28,13 @@ def test_profile_command_rejects_missing_repository(capsys):
         raise AssertionError("Missing repository should be rejected")
 
     assert "Repository directory does not exist" in capsys.readouterr().err
+
+
+def test_profile_command_can_write_json_file(tmp_path, capsys):
+    output = tmp_path / "repository_profile.json"
+
+    assert main(["profile", str(BENCHMARK_ROOT), "--output", str(output)]) == 0
+
+    profile = json.loads(output.read_text(encoding="utf-8"))
+    assert profile["root"].endswith("benchmarks\\cli_data_tool")
+    assert "repository_profile.json" in capsys.readouterr().out

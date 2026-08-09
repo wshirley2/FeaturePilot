@@ -22,6 +22,8 @@ class RepositoryProfile:
     validation_commands: list[list[str]] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
     symbols: dict[str, list[str]] = field(default_factory=dict)
+    routes: dict[str, list[str]] = field(default_factory=dict)
+    import_graph: dict[str, list[str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -58,6 +60,11 @@ class RepositoryProfiler:
             for path, module in index.python_modules.items()
             if module.symbols
         }
+        routes = {
+            path: module.routes
+            for path, module in index.python_modules.items()
+            if module.routes
+        }
         return RepositoryProfile(
             root=str(index.root),
             language="python" if index.python_modules else "unknown",
@@ -68,6 +75,8 @@ class RepositoryProfiler:
             validation_commands=validation_commands,
             files=index.files,
             symbols=symbols,
+            routes=routes,
+            import_graph=index.import_graph(),
         )
 
     @staticmethod

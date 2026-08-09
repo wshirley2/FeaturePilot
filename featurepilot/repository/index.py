@@ -59,3 +59,33 @@ class RepositoryIndex:
                 path: module.to_dict() for path, module in self.python_modules.items()
             },
         }
+
+    def import_graph(self) -> dict[str, list[str]]:
+        """Resolve imports that point to another Python file in this repository."""
+        module_paths: dict[str, str] = {}
+        for path in self.python_modules:
+            for module_name in _module_name_candidates(path):
+                module_paths.setdefault(module_name, path)
+
+        graph: dict[str, list[str]] = {}
+        for path, module in self.python_modules.items():
+            targets: set[str] = set()
+            for imported in module.imports:
+                module_name = imported.lstrip(".")
+                if not module_name:
+                    continue
+                for candidate, target in module_paths.items():
+                    if (
+                        target != path
+                        and (candidate == module_name or candidate.startswith(f"{module_name}."))
+                    ):
+                        targets.add(target)
+            graph[path] = sorted(targets)
+        return graph
+
+
+def _module_name_candidates(path: str) -> list[str]:
+    parts = list(Path(path).with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        parts.pop()
+    return [".".join(parts[start:]) for start in range(len(parts)) if parts[start:]]

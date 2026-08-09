@@ -25,6 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Path to the local repository to analyze.",
     )
+    profile_parser.add_argument(
+        "--output",
+        type=Path,
+        help="Also save the JSON profile to this file.",
+    )
     return parser
 
 
@@ -38,7 +43,16 @@ def main(argv: list[str] | None = None) -> int:
         if not args.repository.is_dir():
             parser.error(f"Repository directory does not exist: {args.repository}")
         profile = RepositoryProfiler().profile(args.repository)
-        print(json.dumps(profile.to_dict(), ensure_ascii=False, indent=2))
+        payload = json.dumps(profile.to_dict(), ensure_ascii=False, indent=2)
+        if args.output:
+            try:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(f"{payload}\n", encoding="utf-8")
+            except OSError as error:
+                parser.error(f"Could not write profile: {error}")
+            print(f"Repository profile written to {args.output}")
+        else:
+            print(payload)
         return 0
     parser.print_help()
     return 0
