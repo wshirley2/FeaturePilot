@@ -11,12 +11,13 @@ which means it's done working and ready to report back.
 
 import concurrent.futures
 import inspect
-from .llm import LLM
-from .tools import ALL_TOOLS
-from .tools.base import Tool
-from .tools.agent import AgentTool
-from .prompt import system_prompt
+
 from .context import ContextManager
+from .llm import LLM
+from .prompt import system_prompt
+from .tools import ALL_TOOLS
+from .tools.agent import AgentTool
+from .tools.base import Tool
 
 
 class Agent:

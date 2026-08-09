@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import threading
+
 from .base import Tool
 
 # Track cwd across commands (Claude Code does this too). Thread-local, so that
@@ -76,6 +77,7 @@ class BashTool(Tool):
                 errors="replace",
                 timeout=timeout,
                 cwd=cwd,
+                check=False,
             )
 
             # track cd commands so next command runs in the right place

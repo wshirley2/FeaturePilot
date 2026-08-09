@@ -1,7 +1,9 @@
 """A read-only tool that fetches the text content of a URL."""
 
 import urllib.request
+
 from .base import Tool
+
 
 class FetchUrlTool(Tool):
     name = "fetch_url"

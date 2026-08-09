@@ -1,5 +1,7 @@
 import time
+
 from .base import Tool
+
 
 class NowTool(Tool):
     name = "now"

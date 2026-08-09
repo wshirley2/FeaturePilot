@@ -54,3 +54,10 @@ Issues = "https://github.com/he-yufeng/CoreCoder/issues"
 [tool.ruff]
 line-length = 130
 target-version = "py310"
+
+[tool.ruff.lint]
+ignore = [
+    "BLE001",  # Tool/agent boundaries intentionally catch broad errors and return them as text.
+    "RUF012",  # Tool schemas are immutable-by-convention class attributes.
+    "S110",  # Context summarization intentionally falls back silently.
+]
