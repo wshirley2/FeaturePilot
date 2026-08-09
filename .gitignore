@@ -15,6 +15,6 @@ venv/
 .DS_Store
 .pytest_cache/
 .tmp/
-.FeaturePilot_项目详细规划.md/
-.FeaturePilot_执行顺序清单.md/
+/FeaturePilot_项目详细规划.md
+/FeaturePilot_执行顺序清单.md
 runs/
