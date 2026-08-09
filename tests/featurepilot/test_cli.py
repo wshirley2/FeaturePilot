@@ -36,5 +36,5 @@ def test_profile_command_can_write_json_file(tmp_path, capsys):
     assert main(["profile", str(BENCHMARK_ROOT), "--output", str(output)]) == 0
 
     profile = json.loads(output.read_text(encoding="utf-8"))
-    assert profile["root"].endswith("benchmarks\\cli_data_tool")
+    assert Path(profile["root"]).resolve() == BENCHMARK_ROOT.resolve()
     assert "repository_profile.json" in capsys.readouterr().out
