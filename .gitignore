@@ -17,4 +17,9 @@ venv/
 .tmp/
 /FeaturePilot_项目详细规划.md
 /FeaturePilot_执行顺序清单.md
+/FeaturePilot_当前架构认知.md
+/docs/devlog/2026-08-10.md
 runs/
+tmp/
+output/
+.featurepilot/
