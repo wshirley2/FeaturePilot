@@ -56,6 +56,9 @@ Issues = "https://github.com/he-yufeng/CoreCoder/issues"
 line-length = 130
 target-version = "py310"
 
+[tool.pytest.ini_options]
+norecursedirs = ["runs", ".featurepilot", ".git", ".venv", "venv", ".tmp", ".pytest_cache"]
+
 [tool.ruff.lint]
 ignore = [
     "BLE001",  # Tool/agent boundaries intentionally catch broad errors and return them as text.

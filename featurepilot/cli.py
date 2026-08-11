@@ -12,6 +12,7 @@ from .domain import PlanRecord, Task
 from .domain.task import TASK_TYPES
 from .planning import PlanGenerator, PlanStore, PlanValidator
 from .repository import ContextSelector, RepositoryIndex, RepositoryProfiler
+from .workspace import CopyWorkspaceBackend, WorkspaceService
 
 _PLAN_COMMANDS = {"create", "list", "show", "approve", "reject", "regenerate"}
 _DEFAULT_STORE_DIR = Path(".featurepilot/plans")
@@ -94,6 +95,22 @@ def build_parser() -> argparse.ArgumentParser:
     regenerate_parser.add_argument("--output", type=Path, help="Also save the raw Plan JSON to this file.")
     regenerate_parser.add_argument("--json", action="store_true", help="Print the saved Plan record as JSON.")
     _add_store_directory(regenerate_parser)
+
+    workspace_parser = subparsers.add_parser("workspace", help="Create isolated workspaces from approved Plans.")
+    workspace_subparsers = workspace_parser.add_subparsers(dest="workspace_command", required=True)
+    workspace_create_parser = workspace_subparsers.add_parser(
+        "create",
+        help="Copy an approved Plan repository into a disposable workspace.",
+    )
+    workspace_create_parser.add_argument("plan_reference", help="Approved Plan reference, for example json-export-v1.")
+    workspace_create_parser.add_argument(
+        "--runs-dir",
+        type=Path,
+        default=Path("runs"),
+        help="Local directory used for disposable Run workspaces.",
+    )
+    workspace_create_parser.add_argument("--json", action="store_true", help="Print the Run metadata as JSON.")
+    _add_store_directory(workspace_create_parser)
     return parser
 
 
@@ -106,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "profile":
         return _run_profile(parser, args)
+    if args.command == "workspace":
+        return _run_workspace_create(parser, args)
     if args.command not in {"plan", "plans"}:
         parser.print_help()
         return 0
@@ -182,6 +201,23 @@ def _run_profile(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
         print(f"Repository profile written to {args.output}")
     else:
         print(payload)
+    return 0
+
+
+def _run_workspace_create(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    try:
+        record = PlanStore(args.store_dir).load(args.plan_reference)
+        run, workspace = WorkspaceService(CopyWorkspaceBackend(args.runs_dir)).create_for_plan(record)
+    except (OSError, ValueError, RuntimeError) as error:
+        parser.error(str(error))
+    if args.json:
+        print(json.dumps({"run": run.to_dict(), "workspace": str(workspace.path)}, ensure_ascii=False, indent=2))
+    else:
+        print("Workspace created.")
+        print(f"Plan: {record.reference}")
+        print(f"Run: {run.display_id}")
+        print(f"Workspace: {workspace.path}")
+        print("The original repository has not been modified.")
     return 0
 
 
