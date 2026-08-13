@@ -215,6 +215,57 @@ def test_exec_tool_distinguishes_bad_args_from_internal_error():
     assert "bad arguments" not in agent._exec_tool(_Good())
 
 
+def test_optional_tool_executor_intercepts_validated_tool_calls():
+    """Applications can add policy without changing normal Tool execution."""
+    from corecoder.tools.base import Tool
+
+    class _Echo(Tool):
+        name = "echo"
+        description = "returns the provided value"
+        parameters = {"type": "object", "properties": {}, "required": []}
+
+        def execute(self, value: str) -> str:
+            return f"direct: {value}"
+
+    class _Executor:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, tool, arguments):
+            self.calls.append((tool.name, arguments))
+            return f"controlled: {arguments['value']}"
+
+    executor = _Executor()
+    agent = Agent(llm=LLM.__new__(LLM), tools=[_Echo()], tool_executor=executor)
+
+    class _Good:
+        name, id, arguments = "echo", "1", {"value": "hello"}
+
+    assert agent._exec_tool(_Good()) == "controlled: hello"
+    assert executor.calls == [("echo", {"value": "hello"})]
+
+
+def test_agent_without_executor_keeps_direct_tool_execution():
+    """The optional extension point must not change CoreCoder's default path."""
+    from corecoder.tools.base import Tool
+
+    class _Echo(Tool):
+        name = "echo"
+        description = "returns the provided value"
+        parameters = {"type": "object", "properties": {}, "required": []}
+
+        def execute(self, value: str) -> str:
+            return f"direct: {value}"
+
+    agent = Agent(llm=LLM.__new__(LLM), tools=[_Echo()])
+
+    class _Good:
+        name, id, arguments = "echo", "1", {"value": "unchanged"}
+
+    assert agent.tool_executor is None
+    assert agent._exec_tool(_Good()) == "direct: unchanged"
+
+
 def test_interrupt_backfills_missing_tool_replies():
     """A half-finished tool round must be repaired so history stays valid."""
     agent = Agent(llm=LLM.__new__(LLM), tools=[])

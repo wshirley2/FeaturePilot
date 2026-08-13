@@ -15,9 +15,14 @@ venv/
 .DS_Store
 .pytest_cache/
 .tmp/
-/FeaturePilot_项目详细规划.md
-/FeaturePilot_执行顺序清单.md
-/FeaturePilot_当前架构认知.md
+/旧FeaturePilot_项目详细规划.md
+/旧FeaturePilot_执行顺序清单.md
+/旧FeaturePilot_当前架构认知.md
+/FeaturePilot_CLI_ChatMode_开发主线.md
+/FeaturePilot_CLI_当前架构认知.md
+/FeaturePilot_CLI_项目详细规划.md
+/FeaturePilot_CLI_执行顺序清单.md
+/FeaturePilot_CLI_十天冲刺计划.md
 /docs/devlog/2026-08-10.md
 runs/
 tmp/

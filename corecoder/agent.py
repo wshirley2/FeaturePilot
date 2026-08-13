@@ -11,6 +11,7 @@ which means it's done working and ready to report back.
 
 import concurrent.futures
 import inspect
+from typing import Any, Protocol
 
 from .context import ContextManager
 from .llm import LLM
@@ -20,6 +21,13 @@ from .tools.agent import AgentTool
 from .tools.base import Tool
 
 
+class ToolExecutor(Protocol):
+    """Optional interception point for applications that need controlled Tool execution."""
+
+    def execute(self, tool: Tool, arguments: dict[str, Any]) -> str:
+        """Execute one validated Tool request and return its text result."""
+
+
 class Agent:
     def __init__(
         self,
@@ -27,6 +35,7 @@ class Agent:
         tools: list[Tool] | None = None,
         max_context_tokens: int = 128_000,
         max_rounds: int = 50,
+        tool_executor: ToolExecutor | None = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
@@ -34,6 +43,7 @@ class Agent:
         self.messages: list[dict] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
         self.max_rounds = max_rounds
+        self.tool_executor = tool_executor
         self._system = system_prompt(self.tools)
 
         # wire up sub-agent capability
@@ -111,6 +121,8 @@ class Agent:
         except TypeError as e:
             return f"Error: bad arguments for {tc.name}: {e}"
         try:
+            if self.tool_executor is not None:
+                return self.tool_executor.execute(tool, dict(tc.arguments))
             return tool.execute(**tc.arguments)
         except Exception as e:
             return f"Error executing {tc.name}: {e}"
