@@ -4,7 +4,17 @@ __version__ = "0.4.0"
 
 from corecoder.agent import Agent
 from corecoder.config import Config
+from corecoder.events import EventSink, RuntimeEvent, RuntimeEventType
 from corecoder.llm import LLM
 from corecoder.tools import ALL_TOOLS
 
-__all__ = ["ALL_TOOLS", "LLM", "Agent", "Config", "__version__"]
+__all__ = [
+    "ALL_TOOLS",
+    "LLM",
+    "Agent",
+    "Config",
+    "EventSink",
+    "RuntimeEvent",
+    "RuntimeEventType",
+    "__version__",
+]
