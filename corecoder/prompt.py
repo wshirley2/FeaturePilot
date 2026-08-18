@@ -4,13 +4,19 @@ import os
 import platform
 
 
-def system_prompt(tools) -> str:
-    cwd = os.getcwd()
+def system_prompt(
+    tools,
+    *,
+    working_directory: str | None = None,
+    assistant_name: str = "CoreCoder",
+    additional_context: str | None = None,
+) -> str:
+    cwd = working_directory or os.getcwd()
     tool_list = "\n".join(f"- **{t.name}**: {t.description}" for t in tools)
     uname = platform.uname()
 
     return f"""\
-You are CoreCoder, an AI coding assistant running in the user's terminal.
+You are {assistant_name}, an AI coding assistant running in the user's terminal.
 You help with software engineering: writing code, fixing bugs, refactoring, explaining code, running commands, and more.
 
 # Environment
@@ -30,4 +36,4 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
 6. **edit_file uniqueness.** When using edit_file, include enough surrounding context in old_string to guarantee a unique match.
 7. **Respect existing style.** Match the project's coding conventions.
 8. **Ask when unsure.** If the request is ambiguous, ask for clarification rather than guessing.
-"""
+""" + (f"\n# Repository Context\n{additional_context}\n" if additional_context else "")

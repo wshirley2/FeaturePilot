@@ -40,6 +40,9 @@ class Agent:
         tool_executor: ToolExecutor | None = None,
         event_sink: EventSink | None = None,
         session_id: str | None = None,
+        working_directory: str | None = None,
+        assistant_name: str = "CoreCoder",
+        system_context: str | None = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
@@ -50,7 +53,12 @@ class Agent:
         self.tool_executor = tool_executor
         self.event_sink = event_sink if event_sink is not None else NullEventSink()
         self.session_id = session_id or uuid4().hex
-        self._system = system_prompt(self.tools)
+        self._system = system_prompt(
+            self.tools,
+            working_directory=working_directory,
+            assistant_name=assistant_name,
+            additional_context=system_context,
+        )
 
         # wire up sub-agent capability
         for t in self.tools:

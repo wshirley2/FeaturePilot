@@ -7,15 +7,20 @@ import json
 import sys
 from pathlib import Path
 
+from rich.console import Console
+
 from . import __version__
+from .chat import ChatSession, TerminalEventSink
 from .domain import PlanRecord, Task
 from .domain.task import TASK_TYPES
 from .planning import PlanGenerator, PlanStore, PlanValidator
 from .repository import ContextSelector, RepositoryIndex, RepositoryProfiler
+from .runtime import RuntimeBootstrap, RuntimeBootstrapInput
 from .workspace import CopyWorkspaceBackend, WorkspaceService
 
 _PLAN_COMMANDS = {"create", "list", "show", "approve", "reject", "regenerate"}
 _DEFAULT_STORE_DIR = Path(".featurepilot/plans")
+_TOP_LEVEL_COMMANDS = {"chat", "status", "profile", "plan", "plans", "workspace"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,6 +31,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=__version__)
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("status", help="Show the current FeaturePilot capabilities.")
+
+    chat_parser = subparsers.add_parser("chat", help="Start an interactive coding-agent chat in a repository.")
+    chat_parser.add_argument("repository", nargs="?", type=Path, default=Path("."), help="Repository directory.")
+    chat_parser.add_argument("-m", "--model", help="Override the configured model.")
+    chat_parser.add_argument("--base-url", help="Override the OpenAI-compatible API base URL.")
+    chat_parser.add_argument("--api-key", help="Override the configured API key.")
 
     profile_parser = subparsers.add_parser("profile", help="Analyze a local repository and print JSON.")
     profile_parser.add_argument("repository", type=Path, help="Path to the local repository to analyze.")
@@ -116,11 +127,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(_normalize_legacy_plan_command(argv))
+    args = parser.parse_args(_normalize_command(argv))
 
     if args.command == "status":
         print("FeaturePilot can profile repositories and manage reviewable implementation plans.")
         return 0
+    if args.command == "chat":
+        return _run_chat(parser, args)
     if args.command == "profile":
         return _run_profile(parser, args)
     if args.command == "workspace":
@@ -185,6 +198,32 @@ def _normalize_legacy_plan_command(argv: list[str] | None) -> list[str]:
     ):
         values.insert(1, "create")
     return values
+
+
+def _normalize_command(argv: list[str] | None) -> list[str]:
+    values = list(sys.argv[1:] if argv is None else argv)
+    values = _normalize_legacy_plan_command(values)
+    if not values:
+        return ["chat", "."]
+    if values[0] not in _TOP_LEVEL_COMMANDS and not values[0].startswith("-"):
+        return ["chat", *values]
+    return values
+
+
+def _run_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    console = Console()
+    sink = TerminalEventSink(console)
+    try:
+        runtime = RuntimeBootstrap().build(RuntimeBootstrapInput(
+            repository=args.repository,
+            event_sink=sink,
+            model=args.model,
+            base_url=args.base_url,
+            api_key=args.api_key,
+        ))
+    except ValueError as error:
+        parser.error(str(error))
+    return ChatSession(runtime, console=console).run()
 
 
 def _run_profile(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:

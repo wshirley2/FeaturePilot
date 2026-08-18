@@ -59,13 +59,16 @@ class BashTool(Tool):
     }
 
     def execute(self, command: str, timeout: int = 120) -> str:
-        # safety check
+        # use this thread's own tracked working directory
+        cwd = getattr(_local, "cwd", None) or os.getcwd()
+
+        return self.execute_in(command, cwd=cwd, timeout=timeout)
+
+    def execute_in(self, command: str, *, cwd: str, timeout: int = 120) -> str:
+        """Execute a command from an application-selected working directory."""
         warning = _check_dangerous(command)
         if warning:
             return f"⚠ Blocked: {warning}\nCommand: {command}\nIf intentional, modify the command to be more specific."
-
-        # use this thread's own tracked working directory
-        cwd = getattr(_local, "cwd", None) or os.getcwd()
 
         try:
             proc = subprocess.run(
