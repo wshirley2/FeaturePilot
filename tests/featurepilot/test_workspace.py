@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -6,7 +7,7 @@ import pytest
 from featurepilot.cli import main
 from featurepilot.domain import Plan, PlanRecord, Task
 from featurepilot.planning import PlanStore
-from featurepilot.workspace import CopyWorkspaceBackend, WorkspaceService
+from featurepilot.workspace import CopyWorkspaceBackend, WorkspaceCreationError, WorkspaceService
 
 
 def _write_source_repository(root: Path) -> Path:
@@ -17,6 +18,12 @@ def _write_source_repository(root: Path) -> Path:
     (repository / ".git" / "HEAD").write_text("ref: main\n", encoding="utf-8")
     (repository / ".venv").mkdir()
     (repository / ".venv" / "private.txt").write_text("ignore me\n", encoding="utf-8")
+    (repository / ".env").write_text("API_KEY=secret\n", encoding="utf-8")
+    (repository / ".env.example").write_text("API_KEY=\n", encoding="utf-8")
+    for directory in (".tmp", "tmp", "runs", ".featurepilot"):
+        artifact = repository / directory / "artifact.txt"
+        artifact.parent.mkdir()
+        artifact.write_text("ignore me\n", encoding="utf-8")
     return repository
 
 
@@ -50,6 +57,10 @@ def test_copy_workspace_is_isolated_and_blocks_escaping_paths(tmp_path):
     assert (workspace.path / "app.py").read_text(encoding="utf-8") == "VALUE = 'source'\n"
     assert not (workspace.path / ".git").exists()
     assert not (workspace.path / ".venv").exists()
+    assert not (workspace.path / ".env").exists()
+    assert (workspace.path / ".env.example").is_file()
+    for directory in (".tmp", "tmp", "runs", ".featurepilot"):
+        assert not (workspace.path / directory).exists()
 
     (workspace.path / "app.py").write_text("VALUE = 'workspace'\n", encoding="utf-8")
     assert (repository / "app.py").read_text(encoding="utf-8") == "VALUE = 'source'\n"
@@ -111,3 +122,28 @@ def test_workspace_create_command_uses_an_approved_saved_plan(tmp_path, capsys):
     assert "Workspace created." in output
     assert stored.reference in output
     assert (tmp_path / "runs").is_dir()
+
+
+def test_copy_failure_removes_the_incomplete_run_and_reports_one_brief_error(tmp_path, monkeypatch):
+    repository = _write_source_repository(tmp_path)
+    runs = tmp_path / "runs"
+    backend = CopyWorkspaceBackend(runs)
+
+    def fail_after_partial_copy(source, destination, ignore):
+        destination.mkdir(parents=True)
+        (destination / "partial.txt").write_text("partial\n", encoding="utf-8")
+        raise shutil.Error([
+            (str(source / "locked.txt"), str(destination / "locked.txt"), "[WinError 5] denied"),
+            (str(source / "other.txt"), str(destination / "other.txt"), "second failure"),
+        ])
+
+    monkeypatch.setattr("featurepilot.workspace.copy_backend.shutil.copytree", fail_after_partial_copy)
+
+    with pytest.raises(WorkspaceCreationError) as captured:
+        backend.create(repository, "c" * 32, label="copy-failure")
+
+    message = str(captured.value)
+    assert "2 item(s) failed" in message
+    assert "locked.txt" in message
+    assert "other.txt" not in message
+    assert not (runs / "copy-failure-cccccccc").exists()

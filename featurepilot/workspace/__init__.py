@@ -1,7 +1,13 @@
 """Isolated workspace creation for FeaturePilot runs."""
 
 from .backend import Workspace, WorkspaceBackend
-from .copy_backend import CopyWorkspaceBackend
+from .copy_backend import CopyWorkspaceBackend, WorkspaceCreationError
 from .service import WorkspaceService
 
-__all__ = ["CopyWorkspaceBackend", "Workspace", "WorkspaceBackend", "WorkspaceService"]
+__all__ = [
+    "CopyWorkspaceBackend",
+    "Workspace",
+    "WorkspaceBackend",
+    "WorkspaceCreationError",
+    "WorkspaceService",
+]

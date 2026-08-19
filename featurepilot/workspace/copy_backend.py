@@ -7,21 +7,12 @@ import re
 import shutil
 from pathlib import Path
 
+from ..path_policy import ignored_child_names, should_ignore_repository_path
 from .backend import Workspace
 
-_IGNORED_NAMES = {
-    ".featurepilot",
-    ".git",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".venv",
-    "__pycache__",
-    "build",
-    "dist",
-    "runs",
-    "venv",
-}
+
+class WorkspaceCreationError(ValueError):
+    """An isolated workspace could not be created without touching the source."""
 
 
 class CopyWorkspaceBackend:
@@ -48,14 +39,23 @@ class CopyWorkspaceBackend:
         if run_directory.exists():
             raise ValueError(f"Short Run id collision: {display_id}")
 
-        source_snapshot = self.source_snapshot(source_root)
+        try:
+            source_snapshot = self.source_snapshot(source_root)
+        except OSError as error:
+            raise WorkspaceCreationError(
+                f"Could not inspect source repository: {_brief_os_error(error, source_root)}"
+            ) from error
         run_directory.mkdir(parents=True, exist_ok=False)
         try:
             shutil.copytree(source_root, workspace_path, ignore=_ignore_workspace_files)
-        except OSError as error:
-            raise ValueError(f"Could not create workspace: {error}") from error
-        if self.source_snapshot(source_root) != source_snapshot:
-            raise RuntimeError("Source repository changed while the workspace was being created")
+            if self.source_snapshot(source_root) != source_snapshot:
+                raise RuntimeError("Source repository changed while the workspace was being created")
+        except (OSError, RuntimeError) as error:
+            cleanup_error = _remove_incomplete_run(run_directory, runs_root)
+            detail = _brief_copy_error(error, source_root)
+            if cleanup_error is not None:
+                detail += f"; incomplete workspace could not be removed: {cleanup_error}"
+            raise WorkspaceCreationError(f"Could not create workspace: {detail}") from error
         return Workspace(
             run_id=run_id,
             source_path=source_root,
@@ -70,7 +70,7 @@ class CopyWorkspaceBackend:
         source_root = source_path.resolve()
         for path in sorted(source_root.rglob("*")):
             relative_path = path.relative_to(source_root)
-            if _should_ignore(relative_path):
+            if should_ignore_repository_path(relative_path):
                 continue
             if not path.is_file():
                 continue
@@ -88,11 +88,44 @@ class CopyWorkspaceBackend:
 
 
 def _ignore_workspace_files(_: str, names: list[str]) -> set[str]:
-    return {name for name in names if name in _IGNORED_NAMES}
+    return ignored_child_names(names)
 
 
-def _should_ignore(relative_path: Path) -> bool:
-    return any(part in _IGNORED_NAMES for part in relative_path.parts)
+def _remove_incomplete_run(run_directory: Path, runs_root: Path) -> OSError | None:
+    """Remove only the exact run directory created by this backend call."""
+
+    if run_directory.parent != runs_root or not run_directory.name:
+        return OSError("refused unsafe cleanup target")
+    try:
+        shutil.rmtree(run_directory)
+    except OSError as error:
+        return error
+    return None
+
+
+def _brief_copy_error(error: OSError | RuntimeError, source_root: Path) -> str:
+    if isinstance(error, shutil.Error) and error.args and isinstance(error.args[0], list):
+        failures = error.args[0]
+        if failures:
+            source, _, detail = failures[0]
+            path = _relative_display(Path(source), source_root)
+            return f"{len(failures)} item(s) failed; first: {path}: {detail}"
+    if isinstance(error, OSError):
+        return _brief_os_error(error, source_root)
+    return str(error)
+
+
+def _brief_os_error(error: OSError, source_root: Path) -> str:
+    path = Path(error.filename) if error.filename else None
+    location = f" ({_relative_display(path, source_root)})" if path else ""
+    return f"{error.strerror or type(error).__name__}{location}"
+
+
+def _relative_display(path: Path, source_root: Path) -> str:
+    try:
+        return path.resolve().relative_to(source_root).as_posix()
+    except ValueError:
+        return path.name or str(path)
 
 
 def _is_safe_run_id(run_id: str) -> bool:

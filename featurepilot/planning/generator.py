@@ -22,6 +22,9 @@ class PlanGenerator:
         candidates: Sequence[CandidateFile],
     ) -> Plan:
         candidate_paths = sorted({candidate.path for candidate in candidates})
+        explicit_paths = self._explicit_repository_paths(task.description, candidate_paths)
+        if explicit_paths:
+            candidate_paths = explicit_paths
         terms = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", task.description.lower()))
         modify_files = [
             path for path in candidate_paths if self._is_modification_candidate(path, terms)
@@ -54,3 +57,16 @@ class PlanGenerator:
         if lower_path.endswith("readme.md"):
             return "readme" in terms or "doc" in terms or "documentation" in terms
         return any(lower_path.endswith(extension) for extension in (".toml", ".yaml", ".yml"))
+
+    @staticmethod
+    def _explicit_repository_paths(description: str, candidates: list[str]) -> list[str]:
+        """Prefer an exact repository-relative path explicitly named by the user."""
+
+        mentioned = {
+            match.replace("\\", "/").lstrip("./").casefold()
+            for match in re.findall(
+                r"(?<![\w.-])(?:[\w.-]+[\\/])*[\w.-]+\.[A-Za-z0-9]+",
+                description,
+            )
+        }
+        return [path for path in candidates if path.casefold() in mentioned]

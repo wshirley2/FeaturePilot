@@ -14,7 +14,7 @@ from featurepilot.managed import ManagedRunService
 from featurepilot.plan_chat import PlanChatSession
 from featurepilot.planning import PlanningService, PlanStore
 from featurepilot.runtime import RuntimeBootstrap, RuntimeBootstrapInput
-from featurepilot.workspace import CopyWorkspaceBackend, WorkspaceService
+from featurepilot.workspace import CopyWorkspaceBackend, WorkspaceCreationError, WorkspaceService
 
 
 class FakeProvider:
@@ -200,3 +200,32 @@ def test_unified_chat_switches_to_plan_executes_and_returns_to_chat(tmp_path, mo
     )
     assert "Workspace:" in managed_fact
     assert "Unified managed run completed." in managed_fact
+
+
+def test_workspace_creation_failure_stays_in_plan_mode_with_a_brief_retry_message(tmp_path):
+    repository = _repository(tmp_path)
+    store = PlanStore(tmp_path / "plans")
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None, width=120)
+
+    class FailingManagedService:
+        def execute(self, plan_reference, **kwargs):
+            raise WorkspaceCreationError("Could not create workspace: access denied (locked.txt)")
+
+    session = PlanChatSession(
+        repository,
+        planning_service=PlanningService(store),
+        plan_store=store,
+        managed_service=FailingManagedService(),
+        console=console,
+    )
+
+    session.handle("Append retry note to README.md")
+    outcome = session.handle("批准并执行")
+
+    assert outcome.action == "continue"
+    assert session.record is not None and session.record.status == "approved"
+    rendered = output.getvalue()
+    assert "Managed Run 未启动" in rendered
+    assert "原仓库未修改" in rendered
+    assert "仓库：" in rendered

@@ -85,3 +85,25 @@ def test_plan_schema_rejects_unknown_fields_and_wrong_types():
                 "unexpected": "not allowed",
             }
         )
+
+
+def test_plan_generator_limits_an_explicit_readme_path_to_the_repository_root(tmp_path):
+    (tmp_path / "README.md").write_text("# Root\n", encoding="utf-8")
+    nested = tmp_path / "examples" / "README.md"
+    nested.parent.mkdir()
+    nested.write_text("# Nested\n", encoding="utf-8")
+    noisy = tmp_path / ".tmp" / "README.md"
+    noisy.parent.mkdir()
+    noisy.write_text("# Generated\n", encoding="utf-8")
+    profile = RepositoryProfiler().profile(tmp_path)
+    index = RepositoryIndex.build(tmp_path)
+    candidates = ContextSelector(index).select(
+        "在 README.md 末尾增加一行 M1-P verification",
+        limit=10,
+    )
+    task = Task(project_id=str(tmp_path), description="在 README.md 末尾增加一行 M1-P verification")
+
+    plan = PlanGenerator().generate(task, profile, candidates)
+
+    assert plan.read_files == ["README.md"]
+    assert plan.modify_files == ["README.md"]

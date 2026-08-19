@@ -12,6 +12,7 @@ from rich.panel import Panel
 from .domain import PlanRecord, Task
 from .managed import ManagedRunExecutionError, ManagedRunResult, ManagedRunService
 from .planning import PlanningService, PlanStore, PlanValidationError
+from .workspace import WorkspaceCreationError
 
 InputFunction = Callable[[str], str]
 
@@ -114,7 +115,7 @@ class PlanChatSession:
         if normalized in _APPROVE_AND_RUN:
             if self.record.status == "draft":
                 self.record = self.plan_store.approve(self.record.reference)
-            return PlanTurnResult("completed", self._execute_approved())
+            return self._execute_approved()
         if normalized in _APPROVE:
             if self.record.status != "draft":
                 self.console.print(f"计划当前状态为 {self.record.status}。")
@@ -128,7 +129,7 @@ class PlanChatSession:
             if self.record.status != "approved":
                 self.console.print("[yellow]计划尚未批准。请明确回复“批准并执行”。[/yellow]")
                 return PlanTurnResult()
-            return PlanTurnResult("completed", self._execute_approved())
+            return self._execute_approved()
         if self.record.status != "draft":
             self.console.print("已批准的计划不能再修改；请回复“执行”或“退出”。")
             return PlanTurnResult()
@@ -172,7 +173,7 @@ class PlanChatSession:
         self.console.print("[cyan]已将输入作为新的完整任务描述，并生成修订版本。[/cyan]")
         self._show_plan(self.record)
 
-    def _execute_approved(self) -> int:
+    def _execute_approved(self) -> PlanTurnResult:
         assert self.record is not None
         self.console.print(f"[green]已批准 {self.record.reference}，开始隔离执行。[/green]")
         try:
@@ -182,13 +183,18 @@ class PlanChatSession:
                 base_url=self.base_url,
                 api_key=self.api_key,
             )
+        except WorkspaceCreationError as error:
+            self.console.print("[red]Managed Run 未启动：无法创建隔离 Workspace。[/red]")
+            self.console.print(str(error))
+            self.console.print("原仓库未修改。修复环境问题后可再次回复“执行”。")
+            return PlanTurnResult()
         except KeyboardInterrupt:
             self.console.print("[yellow]Managed Run 已取消，Workspace 已保留。[/yellow]")
-            return 130
+            return PlanTurnResult("completed", 130)
         except ManagedRunExecutionError as error:
             self.console.print(f"[red]{error}[/red]")
             self.console.print(f"Workspace 已保留：{error.workspace.path}")
-            return 1
+            return PlanTurnResult("completed", 1)
 
         assert self.last_result is not None
         sink = self.last_result.runtime.agent.event_sink
@@ -197,7 +203,7 @@ class PlanChatSession:
         self.console.print("[green]Managed Run 执行完成。[/green]")
         self.console.print(f"Run: {self.last_result.run.display_id}")
         self.console.print(f"Workspace: {self.last_result.workspace.path}")
-        return 0
+        return PlanTurnResult("completed")
 
     def _show_plan(self, record: PlanRecord) -> None:
         plan = record.plan
@@ -208,6 +214,7 @@ class PlanChatSession:
         commands = [" ".join(command) for command in plan.validation_commands]
         body = "\n".join([
             f"状态：{record.status}",
+            f"仓库：{record.repository}",
             f"任务：{plan.summary}",
             "",
             "读取：",

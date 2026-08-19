@@ -47,3 +47,22 @@ def test_repository_profile_extracts_fastapi_routes_and_import_graph(tmp_path):
     assert "fastapi" in profile.frameworks
     assert profile.routes["app/api.py"] == ["GET /items"]
     assert profile.import_graph["app/api.py"] == ["app/service.py"]
+
+
+def test_repository_index_ignores_runtime_artifacts_and_local_secrets(tmp_path):
+    (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("API_KEY=secret\n", encoding="utf-8")
+    (tmp_path / ".env.local").write_text("TOKEN=secret\n", encoding="utf-8")
+    (tmp_path / ".env.example").write_text("API_KEY=\n", encoding="utf-8")
+    for directory in (".tmp", "tmp", "runs", ".featurepilot"):
+        artifact = tmp_path / directory / "copied.py"
+        artifact.parent.mkdir()
+        artifact.write_text("SECRET = True\n", encoding="utf-8")
+
+    index = RepositoryIndex.build(tmp_path)
+
+    assert "README.md" in index.files
+    assert ".env.example" in index.files
+    assert ".env" not in index.files
+    assert ".env.local" not in index.files
+    assert not any(path.endswith("copied.py") for path in index.files)
