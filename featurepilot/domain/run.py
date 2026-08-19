@@ -4,6 +4,13 @@ from dataclasses import asdict, dataclass, field
 from uuid import uuid4
 
 RUN_STATUSES = {"created", "running", "succeeded", "failed", "cancelled"}
+_RUN_TRANSITIONS = {
+    "created": {"running"},
+    "running": {"succeeded", "failed", "cancelled"},
+    "succeeded": set(),
+    "failed": set(),
+    "cancelled": set(),
+}
 
 
 @dataclass(slots=True)
@@ -33,6 +40,18 @@ class Run:
         data = asdict(self)
         data["display_id"] = self.display_id
         return data
+
+    def transition(self, status: str, *, result: dict[str, object] | None = None) -> None:
+        """Move to the next lifecycle state without permitting invalid rewrites."""
+
+        if status not in RUN_STATUSES:
+            allowed = ", ".join(sorted(RUN_STATUSES))
+            raise ValueError(f"Unsupported run status {status!r}; expected one of: {allowed}")
+        if status not in _RUN_TRANSITIONS[self.status]:
+            raise ValueError(f"Run status cannot transition from {self.status!r} to {status!r}")
+        self.status = status
+        if result is not None:
+            self.result = result
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "Run":

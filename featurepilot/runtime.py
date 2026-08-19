@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from corecoder.agent import Agent
+from corecoder.agent import Agent, ToolExecutor
 from corecoder.config import Config
 from corecoder.events import EventSink
 from corecoder.llm import LLM, LiteLLM
@@ -28,6 +28,10 @@ class RuntimeBootstrapInput:
     model: str | None = None
     base_url: str | None = None
     api_key: str | None = None
+    tool_executor: ToolExecutor | None = None
+    tools: list[Tool] | None = None
+    system_context: str | None = None
+    permission_mode: str | None = None
 
 
 @dataclass
@@ -78,17 +82,29 @@ class RuntimeBootstrap:
         except Exception as error:
             profile_warning = f"Repository profile unavailable: {error}"
 
-        tools = [tool for name in _CHAT_TOOL_NAMES if (tool := get_tool(name)) is not None]
+        tools = (
+            inputs.tools
+            if inputs.tools is not None
+            else [tool for name in _CHAT_TOOL_NAMES if (tool := get_tool(name)) is not None]
+        )
         provider = self._build_provider(config)
+        repository_context = _repository_summary(profile, profile_warning)
+        system_context = "\n\n".join(
+            part for part in (repository_context, inputs.system_context) if part
+        )
         agent = Agent(
             llm=provider,
             tools=tools,
             max_context_tokens=config.max_context_tokens,
-            tool_executor=RepositoryToolExecutor(repository),
+            tool_executor=(
+                inputs.tool_executor
+                if inputs.tool_executor is not None
+                else RepositoryToolExecutor(repository)
+            ),
             event_sink=inputs.event_sink,
             working_directory=str(repository),
             assistant_name="FeaturePilot",
-            system_context=_repository_summary(profile, profile_warning),
+            system_context=system_context,
         )
         return ChatRuntime(
             repository=repository,
@@ -97,6 +113,7 @@ class RuntimeBootstrap:
             tools=tools,
             profile=profile,
             profile_warning=profile_warning,
+            permission_mode=(inputs.permission_mode or "legacy tool safety; file paths scoped, C3 approval pending"),
         )
 
     def _build_provider(self, config: Config):

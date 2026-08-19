@@ -22,9 +22,25 @@ class WorkspaceService:
         workspace = self.backend.create(Path(record.repository), run.id, label=record.reference)
         run.workspace_path = str(workspace.path)
         run.source_snapshot = workspace.source_snapshot
-        metadata_path = workspace.path.parent / "run.json"
-        metadata_path.write_text(
-            f"{json.dumps(run.to_dict(), ensure_ascii=False, indent=2)}\n",
-            encoding="utf-8",
-        )
+        self.save_run(run)
         return run, workspace
+
+    def save_run(self, run: Run) -> Path:
+        """Atomically persist the current Run state beside its Workspace."""
+
+        if not run.workspace_path:
+            raise ValueError("Run must have a workspace path before it can be saved")
+        workspace_path = Path(run.workspace_path).resolve()
+        if workspace_path.name != "workspace" or not workspace_path.is_dir():
+            raise ValueError(f"Run workspace directory does not exist: {run.workspace_path}")
+
+        metadata_path = workspace_path.parent / "run.json"
+        temporary_path = workspace_path.parent / f".run-{run.id}.tmp"
+        payload = f"{json.dumps(run.to_dict(), ensure_ascii=False, indent=2)}\n"
+        try:
+            temporary_path.write_text(payload, encoding="utf-8")
+            temporary_path.replace(metadata_path)
+        except OSError:
+            temporary_path.unlink(missing_ok=True)
+            raise
+        return metadata_path

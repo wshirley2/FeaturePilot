@@ -13,6 +13,7 @@ from . import __version__
 from .chat import ChatSession, TerminalEventSink
 from .domain import PlanRecord, Task
 from .domain.task import TASK_TYPES
+from .managed import ManagedRunExecutionError, ManagedRunService
 from .planning import PlanGenerator, PlanStore, PlanValidator
 from .repository import ContextSelector, RepositoryIndex, RepositoryProfiler
 from .runtime import RuntimeBootstrap, RuntimeBootstrapInput
@@ -20,7 +21,7 @@ from .workspace import CopyWorkspaceBackend, WorkspaceService
 
 _PLAN_COMMANDS = {"create", "list", "show", "approve", "reject", "regenerate"}
 _DEFAULT_STORE_DIR = Path(".featurepilot/plans")
-_TOP_LEVEL_COMMANDS = {"chat", "status", "profile", "plan", "plans", "workspace"}
+_TOP_LEVEL_COMMANDS = {"chat", "run", "status", "profile", "plan", "plans", "workspace"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,6 +38,14 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("-m", "--model", help="Override the configured model.")
     chat_parser.add_argument("--base-url", help="Override the OpenAI-compatible API base URL.")
     chat_parser.add_argument("--api-key", help="Override the configured API key.")
+
+    run_parser = subparsers.add_parser("run", help="Execute an approved Plan in an isolated Workspace.")
+    run_parser.add_argument("plan_reference", help="Approved Plan reference, for example json-export-v1.")
+    run_parser.add_argument("--runs-dir", type=Path, default=Path("runs"), help="Directory for retained Run workspaces.")
+    run_parser.add_argument("-m", "--model", help="Override the configured model.")
+    run_parser.add_argument("--base-url", help="Override the OpenAI-compatible API base URL.")
+    run_parser.add_argument("--api-key", help="Override the configured API key.")
+    _add_store_directory(run_parser)
 
     profile_parser = subparsers.add_parser("profile", help="Analyze a local repository and print JSON.")
     profile_parser.add_argument("repository", type=Path, help="Path to the local repository to analyze.")
@@ -134,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "chat":
         return _run_chat(parser, args)
+    if args.command == "run":
+        return _run_managed(parser, args)
     if args.command == "profile":
         return _run_profile(parser, args)
     if args.command == "workspace":
@@ -224,6 +235,44 @@ def _run_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     except ValueError as error:
         parser.error(str(error))
     return ChatSession(runtime, console=console).run()
+
+
+def _run_managed(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    console = Console()
+    sink = TerminalEventSink(console)
+    service = ManagedRunService(
+        plan_store=PlanStore(args.store_dir),
+        workspace_service=WorkspaceService(CopyWorkspaceBackend(args.runs_dir)),
+        runtime_bootstrap=RuntimeBootstrap(),
+        event_sink=sink,
+    )
+    try:
+        result = service.execute(
+            args.plan_reference,
+            model=args.model,
+            base_url=args.base_url,
+            api_key=args.api_key,
+        )
+    except KeyboardInterrupt:
+        console.print("[yellow]Managed Run cancelled. Workspace retained.[/yellow]")
+        return 130
+    except ManagedRunExecutionError as error:
+        console.print(f"[red]{error}[/red]")
+        console.print(f"Workspace retained at {error.workspace.path}")
+        return 1
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    except Exception as error:
+        console.print(f"[red]Managed Run failed: {error}[/red]")
+        console.print("Workspace and run.json were retained for inspection.")
+        return 1
+
+    if not sink.last_turn_streamed and result.response:
+        console.print(result.response)
+    console.print("[green]Managed Run succeeded.[/green]")
+    console.print(f"Run: {result.run.display_id}")
+    console.print(f"Workspace: {result.workspace.path}")
+    return 0
 
 
 def _run_profile(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
