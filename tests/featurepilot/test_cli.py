@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from featurepilot.cli import main
+from featurepilot.planning import PlanningService
 
 BENCHMARK_ROOT = Path(__file__).parents[2] / "benchmarks" / "cli_data_tool"
 
@@ -134,3 +135,33 @@ def test_plans_alias_and_legacy_create_spelling_remain_available(tmp_path, capsy
 
     assert main(["plans", "list", "--store-dir", str(tmp_path / "plans")]) == 0
     assert "REFERENCE" in capsys.readouterr().out
+
+
+def test_plan_chat_command_builds_the_conversational_session(tmp_path, monkeypatch):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    captured = {}
+
+    class FakePlanChatSession:
+        def __init__(self, selected_repository, **kwargs):
+            captured["repository"] = selected_repository
+            captured["kwargs"] = kwargs
+
+        def run(self):
+            return 7
+
+    monkeypatch.setattr("featurepilot.cli.PlanChatSession", FakePlanChatSession)
+
+    result = main([
+        "plan",
+        "chat",
+        str(repository),
+        "--store-dir",
+        str(tmp_path / "plans"),
+        "--runs-dir",
+        str(tmp_path / "runs"),
+    ])
+
+    assert result == 7
+    assert captured["repository"] == repository
+    assert isinstance(captured["kwargs"]["planning_service"], PlanningService)

@@ -14,12 +14,13 @@ from .chat import ChatSession, TerminalEventSink
 from .domain import PlanRecord, Task
 from .domain.task import TASK_TYPES
 from .managed import ManagedRunExecutionError, ManagedRunService
-from .planning import PlanGenerator, PlanStore, PlanValidator
-from .repository import ContextSelector, RepositoryIndex, RepositoryProfiler
+from .plan_chat import PlanChatSession
+from .planning import PlanningService, PlanStore, PlanValidationError
+from .repository import RepositoryProfiler
 from .runtime import RuntimeBootstrap, RuntimeBootstrapInput
 from .workspace import CopyWorkspaceBackend, WorkspaceService
 
-_PLAN_COMMANDS = {"create", "list", "show", "approve", "reject", "regenerate"}
+_PLAN_COMMANDS = {"chat", "create", "list", "show", "approve", "reject", "regenerate"}
 _DEFAULT_STORE_DIR = Path(".featurepilot/plans")
 _TOP_LEVEL_COMMANDS = {"chat", "run", "status", "profile", "plan", "plans", "workspace"}
 
@@ -57,6 +58,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create, review and decide implementation plans.",
     )
     plan_subparsers = plan_parser.add_subparsers(dest="plan_command", required=True)
+
+    plan_chat_parser = plan_subparsers.add_parser("chat", help="Create, review and execute a Plan conversationally.")
+    plan_chat_parser.add_argument("repository", nargs="?", type=Path, default=Path("."), help="Repository directory.")
+    plan_chat_parser.add_argument(
+        "--runs-dir",
+        type=Path,
+        default=Path("runs"),
+        help="Directory for retained Run workspaces.",
+    )
+    plan_chat_parser.add_argument("-m", "--model", help="Override the configured model used during execution.")
+    plan_chat_parser.add_argument("--base-url", help="Override the OpenAI-compatible API base URL.")
+    plan_chat_parser.add_argument("--api-key", help="Override the configured API key.")
+    _add_store_directory(plan_chat_parser)
 
     create_parser = plan_subparsers.add_parser("create", help="Create and save a draft Plan.")
     create_parser.add_argument("repository", type=Path, help="Path to the local repository to analyze.")
@@ -152,6 +166,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command not in {"plan", "plans"}:
         parser.print_help()
         return 0
+
+    if args.plan_command == "chat":
+        return _run_plan_chat(parser, args)
 
     if args.plan_command == "create":
         task = Task(
@@ -275,6 +292,31 @@ def _run_managed(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
     return 0
 
 
+def _run_plan_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    console = Console()
+    sink = TerminalEventSink(console)
+    store = PlanStore(args.store_dir)
+    session = PlanChatSession(
+        args.repository,
+        planning_service=PlanningService(store),
+        plan_store=store,
+        managed_service=ManagedRunService(
+            plan_store=store,
+            workspace_service=WorkspaceService(CopyWorkspaceBackend(args.runs_dir)),
+            runtime_bootstrap=RuntimeBootstrap(),
+            event_sink=sink,
+        ),
+        console=console,
+        model=args.model,
+        base_url=args.base_url,
+        api_key=args.api_key,
+    )
+    try:
+        return session.run()
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+
+
 def _run_profile(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     if not args.repository.is_dir():
         parser.error(f"Repository directory does not exist: {args.repository}")
@@ -316,29 +358,28 @@ def _create_and_save_plan(
     task: Task,
     name: str | None,
 ) -> int:
-    if not repository.is_dir():
-        parser.error(f"Repository directory does not exist: {repository}")
-    if args.limit < 1:
-        parser.error("--limit must be at least 1")
-
-    profile = RepositoryProfiler().profile(repository)
-    index = RepositoryIndex.build(repository)
-    candidates = ContextSelector(index).select(task.description, limit=args.limit)
-    plan = PlanGenerator().generate(task, profile, candidates)
-    validation = PlanValidator().validate(plan, profile)
-    if not validation.is_valid:
-        if args.json:
-            print(json.dumps({"errors": validation.errors, "warnings": validation.warnings}, ensure_ascii=False, indent=2))
-        else:
-            print("Plan validation failed:\n" + "\n".join(f"- {error}" for error in validation.errors))
-        return 2
     try:
-        record = PlanStore(args.store_dir).save_draft(plan, repository, task=task, name=name)
+        record = PlanningService(PlanStore(args.store_dir)).create_draft(
+            repository,
+            task,
+            name=name,
+            limit=args.limit,
+        )
+    except PlanValidationError as error:
+        if args.json:
+            print(json.dumps(
+                {"errors": error.result.errors, "warnings": error.result.warnings},
+                ensure_ascii=False,
+                indent=2,
+            ))
+        else:
+            print("Plan validation failed:\n" + "\n".join(f"- {item}" for item in error.result.errors))
+        return 2
     except (OSError, ValueError) as error:
         parser.error(f"Could not save plan: {error}")
 
     if args.output:
-        payload = json.dumps(plan.to_dict(), ensure_ascii=False, indent=2)
+        payload = json.dumps(record.plan.to_dict(), ensure_ascii=False, indent=2)
         try:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(f"{payload}\n", encoding="utf-8")
