@@ -39,6 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("-m", "--model", help="Override the configured model.")
     chat_parser.add_argument("--base-url", help="Override the OpenAI-compatible API base URL.")
     chat_parser.add_argument("--api-key", help="Override the configured API key.")
+    chat_parser.add_argument("--runs-dir", type=Path, default=Path("runs"), help=argparse.SUPPRESS)
+    _add_store_directory(chat_parser)
 
     run_parser = subparsers.add_parser("run", help="Execute an approved Plan in an isolated Workspace.")
     run_parser.add_argument("plan_reference", help="Approved Plan reference, for example json-export-v1.")
@@ -241,8 +243,9 @@ def _normalize_command(argv: list[str] | None) -> list[str]:
 def _run_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     console = Console()
     sink = TerminalEventSink(console)
+    bootstrap = RuntimeBootstrap()
     try:
-        runtime = RuntimeBootstrap().build(RuntimeBootstrapInput(
+        runtime = bootstrap.build(RuntimeBootstrapInput(
             repository=args.repository,
             event_sink=sink,
             model=args.model,
@@ -251,7 +254,23 @@ def _run_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         ))
     except ValueError as error:
         parser.error(str(error))
-    return ChatSession(runtime, console=console).run()
+    store = PlanStore(args.store_dir)
+    plan_session = PlanChatSession(
+        runtime.repository,
+        planning_service=PlanningService(store),
+        plan_store=store,
+        managed_service=ManagedRunService(
+            plan_store=store,
+            workspace_service=WorkspaceService(CopyWorkspaceBackend(args.runs_dir)),
+            runtime_bootstrap=bootstrap,
+            event_sink=sink,
+        ),
+        console=console,
+        model=args.model,
+        base_url=args.base_url,
+        api_key=args.api_key,
+    )
+    return ChatSession(runtime, console=console, plan_session=plan_session).run()
 
 
 def _run_managed(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:

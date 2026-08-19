@@ -3,6 +3,7 @@ from pathlib import Path
 
 from featurepilot.cli import main
 from featurepilot.planning import PlanningService
+from featurepilot.runtime import RuntimeBootstrap
 
 BENCHMARK_ROOT = Path(__file__).parents[2] / "benchmarks" / "cli_data_tool"
 
@@ -165,3 +166,38 @@ def test_plan_chat_command_builds_the_conversational_session(tmp_path, monkeypat
     assert result == 7
     assert captured["repository"] == repository
     assert isinstance(captured["kwargs"]["planning_service"], PlanningService)
+
+
+def test_default_chat_entry_injects_the_embedded_plan_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    captured = {}
+
+    class Provider:
+        model = "fake-unified"
+
+    class FakeChatSession:
+        def __init__(self, runtime, **kwargs):
+            captured["runtime"] = runtime
+            captured["plan_session"] = kwargs.get("plan_session")
+
+        def run(self):
+            return 9
+
+    bootstrap = RuntimeBootstrap(provider_factory=lambda config: Provider())
+    monkeypatch.setattr("featurepilot.cli.RuntimeBootstrap", lambda: bootstrap)
+    monkeypatch.setattr("featurepilot.cli.ChatSession", FakeChatSession)
+
+    result = main([
+        "chat",
+        str(repository),
+        "--store-dir",
+        str(tmp_path / "plans"),
+        "--runs-dir",
+        str(tmp_path / "runs"),
+    ])
+
+    assert result == 9
+    assert captured["runtime"].repository == repository.resolve()
+    assert captured["plan_session"] is not None

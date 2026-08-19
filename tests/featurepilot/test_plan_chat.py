@@ -1,0 +1,202 @@
+"""Minimal conversational Plan entry tests."""
+
+from __future__ import annotations
+
+import json
+from io import StringIO
+from pathlib import Path
+
+from rich.console import Console
+
+from corecoder.llm import LLMResponse, ToolCall
+from featurepilot.chat import ChatSession, TerminalEventSink
+from featurepilot.managed import ManagedRunService
+from featurepilot.plan_chat import PlanChatSession
+from featurepilot.planning import PlanningService, PlanStore
+from featurepilot.runtime import RuntimeBootstrap, RuntimeBootstrapInput
+from featurepilot.workspace import CopyWorkspaceBackend, WorkspaceService
+
+
+class FakeProvider:
+    model = "fake-plan-chat"
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    estimated_cost = None
+
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.requests = []
+
+    def chat(self, messages, tools=None, on_token=None):
+        self.requests.append({"messages": messages, "tools": tools})
+        response = next(self.responses)
+        if on_token and response.content:
+            on_token(response.content)
+        return response
+
+
+def _repository(tmp_path: Path) -> Path:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (repository / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\npythonpath = ['.']\n[tool.ruff]\nline-length = 100\n",
+        encoding="utf-8",
+    )
+    return repository
+
+
+def _session(tmp_path: Path, repository: Path, provider: FakeProvider, inputs: list[str]):
+    store = PlanStore(tmp_path / "plans")
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    sink = TerminalEventSink(console)
+    session = PlanChatSession(
+        repository,
+        planning_service=PlanningService(store),
+        plan_store=store,
+        managed_service=ManagedRunService(
+            plan_store=store,
+            workspace_service=WorkspaceService(CopyWorkspaceBackend(tmp_path / "runs")),
+            runtime_bootstrap=RuntimeBootstrap(provider_factory=lambda config: provider),
+            event_sink=sink,
+        ),
+        console=console,
+        input_fn=lambda prompt: inputs.pop(0),
+    )
+    return session, store, output
+
+
+def test_plan_chat_requires_explicit_approval_then_runs_in_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = _repository(tmp_path)
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "write-1",
+            "write_file",
+            {"file_path": "README.md", "content": "# Demo\n\nPlan Chat verification\n"},
+        )]),
+        LLMResponse(content="Conversational plan completed."),
+    ])
+    session, store, output = _session(
+        tmp_path,
+        repository,
+        provider,
+        ["Append Plan Chat verification to README.md", "执行", "批准并执行。"],
+    )
+
+    assert session.run() == 0
+
+    records = store.list(repository=repository)
+    assert len(records) == 1
+    assert records[0].status == "approved"
+    metadata_paths = list((tmp_path / "runs").glob("*/run.json"))
+    assert len(metadata_paths) == 1
+    metadata = json.loads(metadata_paths[0].read_text(encoding="utf-8"))
+    workspace = Path(metadata["workspace_path"])
+    assert metadata["status"] == "succeeded"
+    assert "Plan Chat verification" in (workspace / "README.md").read_text(encoding="utf-8")
+    assert (repository / "README.md").read_text(encoding="utf-8") == "# Demo\n"
+    rendered = output.getvalue()
+    assert "计划尚未批准" in rendered
+    assert "Managed Run 执行完成" in rendered
+
+
+def test_plan_chat_natural_language_revision_creates_next_version(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = _repository(tmp_path)
+    session, store, output = _session(
+        tmp_path,
+        repository,
+        FakeProvider([]),
+        [
+            "Append first note to README.md",
+            "Append revised verification note to README.md",
+            "/exit",
+        ],
+    )
+
+    assert session.run() == 0
+
+    records = store.list(repository=repository)
+    assert {record.version for record in records} == {1, 2}
+    assert len({record.plan.task_id for record in records}) == 1
+    latest = next(record for record in records if record.version == 2)
+    assert latest.plan.summary == "Append revised verification note to README.md"
+    assert "已将输入作为新的完整任务描述" in output.getvalue()
+    assert not (tmp_path / "runs").exists()
+
+
+def test_unified_chat_switches_to_plan_executes_and_returns_to_chat(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = _repository(tmp_path)
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    sink = TerminalEventSink(console)
+    chat_provider = FakeProvider([
+        LLMResponse(content="普通 Chat 正常。"),
+        LLMResponse(content="我知道刚才的 Managed Run。"),
+    ])
+    managed_provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "write-1",
+            "write_file",
+            {"file_path": "README.md", "content": "# Demo\n\nUnified Plan verification\n"},
+        )]),
+        LLMResponse(content="Unified managed run completed."),
+    ])
+    runtime = RuntimeBootstrap(provider_factory=lambda config: chat_provider).build(RuntimeBootstrapInput(
+        repository=repository,
+        event_sink=sink,
+    ))
+    store = PlanStore(tmp_path / "plans")
+    plan_session = PlanChatSession(
+        repository,
+        planning_service=PlanningService(store),
+        plan_store=store,
+        managed_service=ManagedRunService(
+            plan_store=store,
+            workspace_service=WorkspaceService(CopyWorkspaceBackend(tmp_path / "runs")),
+            runtime_bootstrap=RuntimeBootstrap(provider_factory=lambda config: managed_provider),
+            event_sink=sink,
+        ),
+        console=console,
+    )
+    inputs = iter([
+        "介绍一下仓库",
+        "我想先制定计划：Append Unified Plan verification to README.md",
+        "批准并执行",
+        "刚才的运行结果是什么？",
+        "/exit",
+    ])
+    prompts = []
+
+    def input_fn(prompt):
+        prompts.append(prompt)
+        return next(inputs)
+
+    session = ChatSession(
+        runtime,
+        console=console,
+        input_fn=input_fn,
+        plan_session=plan_session,
+    )
+
+    assert session.run() == 0
+
+    rendered = output.getvalue()
+    assert rendered.count("FeaturePilot Chat") == 1
+    assert "FeaturePilot Plan Chat" not in rendered
+    assert "已进入 Plan 模式" in rendered
+    assert "Managed Run 执行完成" in rendered
+    assert "已返回 Chat 模式" in rendered
+    assert prompts == ["You > ", "You > ", "Plan > ", "You > ", "You > "]
+    assert len(chat_provider.requests) == 2
+    follow_up_messages = chat_provider.requests[1]["messages"]
+    managed_fact = next(
+        message["content"]
+        for message in follow_up_messages
+        if message["role"] == "system" and "Managed Run completed during this chat" in message["content"]
+    )
+    assert "Workspace:" in managed_fact
+    assert "Unified managed run completed." in managed_fact

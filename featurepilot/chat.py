@@ -6,6 +6,7 @@ import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -16,6 +17,9 @@ from corecoder.events import RuntimeEvent, RuntimeEventType
 from corecoder.tools.edit import _changed_files
 
 from .runtime import ChatRuntime
+
+if TYPE_CHECKING:
+    from .plan_chat import PlanChatSession
 
 InputFunction = Callable[[str], str]
 
@@ -78,16 +82,20 @@ class ChatSession:
         *,
         console: Console | None = None,
         input_fn: InputFunction = input,
+        plan_session: PlanChatSession | None = None,
     ):
         self.runtime = runtime
         self.console = console or Console()
         self.input_fn = input_fn
+        self.plan_session = plan_session
+        self._plan_mode = False
 
     def run(self) -> int:
         self.show_startup()
         while True:
             try:
-                user_input = self.input_fn("You > ").strip()
+                prompt = "Plan > " if self._plan_mode else "You > "
+                user_input = self.input_fn(prompt).strip()
             except EOFError:
                 self.console.print("\nBye!")
                 return 0
@@ -100,6 +108,25 @@ class ChatSession:
             if user_input.lower() in {"exit", "quit", "/exit", "/quit"}:
                 self.console.print("Bye!")
                 return 0
+            if self._plan_mode:
+                if _is_return_to_chat(user_input):
+                    self._leave_plan_mode()
+                    continue
+                assert self.plan_session is not None
+                outcome = self.plan_session.handle(user_input)
+                if outcome.action in {"completed", "exit"}:
+                    self._remember_managed_run()
+                    self._leave_plan_mode()
+                continue
+            matched, plan_task = _extract_plan_request(user_input)
+            if self.plan_session is not None and matched:
+                self._enter_plan_mode()
+                if plan_task:
+                    outcome = self.plan_session.handle(plan_task)
+                    if outcome.action in {"completed", "exit"}:
+                        self._remember_managed_run()
+                        self._leave_plan_mode()
+                continue
             if user_input.startswith("/"):
                 self._handle_command(user_input)
                 continue
@@ -135,6 +162,11 @@ class ChatSession:
             f"Session: [dim]{self.runtime.agent.session_id[:8]}[/dim]",
             f"Tools: {', '.join(tool.name for tool in self.runtime.tools)}",
             *profile_lines,
+            *(
+                ["Plan: say ‘先制定计划：<任务>’ for approved isolated execution."]
+                if self.plan_session is not None
+                else []
+            ),
             "Type /help for commands; Ctrl+C cancels a turn; /exit exits Chat.",
         ])
         self.console.print(Panel(body, border_style="blue"))
@@ -161,19 +193,23 @@ class ChatSession:
             handler()
 
     def _show_help(self) -> None:
-        self.console.print(Panel(
-            "/status  Runtime and repository summary\n"
-            "/tools   Available tools\n"
-            "/files   Files changed in this process\n"
-            "/diff    Current Git working-tree diff\n"
-            "/tokens  Provider token usage and estimated cost\n"
-            "/compact Compress model context\n"
-            "/model [name]  Show or switch model\n"
-            "/clear   Clear conversation messages\n"
-            "/save, /sessions  Available after C4 event sessions\n"
+        lines = [
+            "/status  Runtime and repository summary",
+            "/tools   Available tools",
+            "/files   Files changed in this process",
+            "/diff    Current Git working-tree diff",
+            "/tokens  Provider token usage and estimated cost",
+            "/compact Compress model context",
+            "/model [name]  Show or switch model",
+            "/clear   Clear conversation messages",
+        ]
+        if self.plan_session is not None:
+            lines.append("/plan    Enter Plan mode (natural language also works)")
+        lines.extend([
+            "/save, /sessions  Available after C4 event sessions",
             "/exit    Exit Chat",
-            title="FeaturePilot Commands",
-        ))
+        ])
+        self.console.print(Panel("\n".join(lines), title="FeaturePilot Commands"))
 
     def _show_tools(self) -> None:
         for tool in self.runtime.tools:
@@ -243,6 +279,37 @@ class ChatSession:
         self.runtime.agent.reset()
         self.console.print("[yellow]Conversation messages cleared.[/yellow]")
 
+    def _enter_plan_mode(self) -> None:
+        assert self.plan_session is not None
+        self.plan_session.reset()
+        self._plan_mode = True
+        self.console.print(
+            "[cyan]已进入 Plan 模式。[/cyan] 描述任务后可继续修订，明确回复“批准并执行”才会启动。"
+        )
+
+    def _leave_plan_mode(self) -> None:
+        assert self.plan_session is not None
+        self._plan_mode = False
+        self.plan_session.reset()
+        self.console.print("[cyan]已返回 Chat 模式。[/cyan]")
+
+    def _remember_managed_run(self) -> None:
+        assert self.plan_session is not None
+        result = self.plan_session.last_result
+        if result is None:
+            return
+        self.runtime.agent.messages.append({
+            "role": "system",
+            "content": "\n".join([
+                "A FeaturePilot Managed Run completed during this chat.",
+                f"Run: {result.run.id}",
+                f"Status: {result.run.status}",
+                f"Workspace: {result.workspace.path}",
+                "The Managed changes remain in that isolated Workspace; Chat tools still target the source repository.",
+                f"Managed Agent summary: {result.response}",
+            ]),
+        })
+
     def _repository_changed_files(self) -> list[str]:
         files = []
         for value in _changed_files:
@@ -277,3 +344,39 @@ def _tool_status(result: str) -> str:
     if lowered.startswith("error") or "[exit code:" in lowered:
         return "error"
     return "completed"
+
+
+def _extract_plan_request(value: str) -> tuple[bool, str]:
+    normalized = value.strip()
+    lowered = normalized.casefold()
+    prefixes = (
+        "先制定计划",
+        "先制定一个计划",
+        "请先制定计划",
+        "请先制定一个计划",
+        "帮我制定计划",
+        "帮我制定一个计划",
+        "帮我先制定计划",
+        "帮我先制定一个计划",
+        "我想先制定计划",
+        "我想先制定一个计划",
+        "先做计划",
+        "进入计划模式",
+        "使用计划模式",
+        "用计划模式",
+        "我想用计划模式",
+        "进入plan模式",
+        "用plan模式",
+        "/plan",
+        "plan mode",
+    )
+    for prefix in prefixes:
+        if lowered.startswith(prefix.casefold()):
+            task = normalized[len(prefix):].lstrip("：:，,。.!！ ")
+            return True, task
+    return False, ""
+
+
+def _is_return_to_chat(value: str) -> bool:
+    normalized = value.strip().casefold().rstrip("。.!！")
+    return normalized in {"返回聊天", "返回chat", "退出计划模式", "回到聊天", "/chat"}
