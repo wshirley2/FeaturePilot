@@ -305,6 +305,8 @@ class ChatSession:
                 f"Run: {result.run.id}",
                 f"Status: {result.run.status}",
                 f"Workspace: {result.workspace.path}",
+                f"Validation: {result.validation.status}",
+                f"Validation artifact: {result.validation_path}",
                 "The Managed changes remain in that isolated Workspace; Chat tools still target the source repository.",
                 f"Managed Agent summary: {result.response}",
             ]),

@@ -43,6 +43,7 @@ def _repository(tmp_path: Path) -> Path:
         "[tool.pytest.ini_options]\npythonpath = ['.']\n[tool.ruff]\nline-length = 100\n",
         encoding="utf-8",
     )
+    (repository / "test_smoke.py").write_text("def test_smoke():\n    assert True\n", encoding="utf-8")
     return repository
 
 
@@ -99,7 +100,8 @@ def test_plan_chat_requires_explicit_approval_then_runs_in_workspace(tmp_path, m
     assert (repository / "README.md").read_text(encoding="utf-8") == "# Demo\n"
     rendered = output.getvalue()
     assert "计划尚未批准" in rendered
-    assert "Managed Run 执行完成" in rendered
+    assert "Managed Run 执行与验证完成" in rendered
+    assert "系统验证：passed" in rendered
 
 
 def test_plan_chat_natural_language_revision_creates_next_version(tmp_path, monkeypatch):
@@ -188,7 +190,7 @@ def test_unified_chat_switches_to_plan_executes_and_returns_to_chat(tmp_path, mo
     assert rendered.count("FeaturePilot Chat") == 1
     assert "FeaturePilot Plan Chat" not in rendered
     assert "已进入 Plan 模式" in rendered
-    assert "Managed Run 执行完成" in rendered
+    assert "Managed Run 执行与验证完成" in rendered
     assert "已返回 Chat 模式" in rendered
     assert prompts == ["You > ", "You > ", "Plan > ", "You > ", "You > "]
     assert len(chat_provider.requests) == 2
@@ -199,6 +201,7 @@ def test_unified_chat_switches_to_plan_executes_and_returns_to_chat(tmp_path, mo
         if message["role"] == "system" and "Managed Run completed during this chat" in message["content"]
     )
     assert "Workspace:" in managed_fact
+    assert "Validation: passed" in managed_fact
     assert "Unified managed run completed." in managed_fact
 
 
@@ -229,3 +232,26 @@ def test_workspace_creation_failure_stays_in_plan_mode_with_a_brief_retry_messag
     assert "Managed Run 未启动" in rendered
     assert "原仓库未修改" in rendered
     assert "仓库：" in rendered
+
+
+def test_plan_chat_reports_system_validation_failure_and_retains_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = _repository(tmp_path)
+    (repository / "test_smoke.py").write_text("def test_smoke():\n    assert False\n", encoding="utf-8")
+    session, _, output = _session(
+        tmp_path,
+        repository,
+        FakeProvider([LLMResponse(content="Agent implementation finished.")]),
+        ["Append a validation failure note to README.md", "批准并执行"],
+    )
+
+    assert session.run() == 1
+
+    metadata_path = next((tmp_path / "runs").glob("*/run.json"))
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["status"] == "failed"
+    assert (metadata_path.parent / "workspace").is_dir()
+    assert (metadata_path.parent / "validation.json").is_file()
+    rendered = output.getvalue()
+    assert "系统验证：failed" in rendered
+    assert "Managed Run 验证未通过" in rendered

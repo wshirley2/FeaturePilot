@@ -305,6 +305,16 @@ def _run_managed(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
 
     if not sink.last_turn_streamed and result.response:
         console.print(result.response)
+    validation_style = "green" if result.validation.status == "passed" else "red"
+    console.print(
+        f"[{validation_style}]Validation: {result.validation.status}[/{validation_style}] "
+        f"({result.validation_path})"
+    )
+    if result.run.status != "succeeded":
+        console.print("[red]Managed Run failed validation. Workspace retained.[/red]")
+        console.print(f"Run: {result.run.display_id}")
+        console.print(f"Workspace: {result.workspace.path}")
+        return 1
     console.print("[green]Managed Run succeeded.[/green]")
     console.print(f"Run: {result.run.display_id}")
     console.print(f"Workspace: {result.workspace.path}")

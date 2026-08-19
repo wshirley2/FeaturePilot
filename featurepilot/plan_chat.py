@@ -200,7 +200,18 @@ class PlanChatSession:
         sink = self.last_result.runtime.agent.event_sink
         if not getattr(sink, "last_turn_streamed", False) and self.last_result.response:
             self.console.print(self.last_result.response)
-        self.console.print("[green]Managed Run 执行完成。[/green]")
+        validation = self.last_result.validation
+        validation_style = "green" if validation.status == "passed" else "red"
+        self.console.print(
+            f"[{validation_style}]系统验证：{validation.status}[/{validation_style}] "
+            f"({self.last_result.validation_path})"
+        )
+        if self.last_result.run.status != "succeeded":
+            self.console.print("[red]Managed Run 验证未通过，Workspace 已保留。[/red]")
+            self.console.print(f"Run: {self.last_result.run.display_id}")
+            self.console.print(f"Workspace: {self.last_result.workspace.path}")
+            return PlanTurnResult("completed", 1)
+        self.console.print("[green]Managed Run 执行与验证完成。[/green]")
         self.console.print(f"Run: {self.last_result.run.display_id}")
         self.console.print(f"Workspace: {self.last_result.workspace.path}")
         return PlanTurnResult("completed")

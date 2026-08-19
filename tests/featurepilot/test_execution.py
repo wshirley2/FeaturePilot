@@ -18,6 +18,7 @@ from featurepilot.execution import (
     ToolEffect,
     ToolPolicy,
     ValidationCommandRunner,
+    ValidationService,
     WorkspaceToolExecutor,
     build_featurepilot_tools,
 )
@@ -225,6 +226,18 @@ def test_validation_runner_uses_workspace_as_its_working_directory(tmp_path):
     result = ValidationCommandRunner().run(command, workspace_path)
 
     assert result == "workspace only"
+
+
+def test_validation_service_writes_a_passed_artifact_when_no_commands_are_required(tmp_path):
+    workspace_path = tmp_path / "run" / "workspace"
+    workspace_path.mkdir(parents=True)
+
+    artifact, artifact_path = ValidationService().validate("run-id", workspace_path, [])
+
+    assert artifact.status == "passed"
+    assert artifact.commands == []
+    assert artifact_path == workspace_path.parent / "validation.json"
+    assert artifact_path.is_file()
 
 
 def test_featurepilot_tool_set_excludes_network_and_delegation():

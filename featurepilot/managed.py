@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from corecoder.events import EventSink
 
 from .domain import PlanRecord, Run
-from .execution import ExecutionContext, WorkspaceToolExecutor, build_featurepilot_tools
+from .execution import (
+    ExecutionContext,
+    ValidationArtifact,
+    ValidationService,
+    WorkspaceToolExecutor,
+    build_featurepilot_tools,
+)
 from .planning import PlanStore
 from .runtime import ChatRuntime, RuntimeBootstrap, RuntimeBootstrapInput
 from .workspace import Workspace, WorkspaceService
@@ -22,6 +29,8 @@ class ManagedRunResult:
     workspace: Workspace
     runtime: ChatRuntime
     response: str
+    validation: ValidationArtifact
+    validation_path: Path
 
 
 class ManagedRunExecutionError(RuntimeError):
@@ -44,11 +53,13 @@ class ManagedRunService:
         workspace_service: WorkspaceService,
         runtime_bootstrap: RuntimeBootstrap,
         event_sink: EventSink,
+        validation_service: ValidationService | None = None,
     ) -> None:
         self.plan_store = plan_store
         self.workspace_service = workspace_service
         self.runtime_bootstrap = runtime_bootstrap
         self.event_sink = event_sink
+        self.validation_service = validation_service or ValidationService()
 
     def execute(
         self,
@@ -83,6 +94,11 @@ class ManagedRunService:
                 permission_mode="approved Plan scope in an isolated Workspace",
             ))
             response = runtime.agent.chat(_managed_task(record))
+            validation, validation_path = self.validation_service.validate(
+                run.id,
+                workspace.path,
+                record.plan.validation_commands,
+            )
         except KeyboardInterrupt:
             run.transition("cancelled", result={
                 "error_type": "KeyboardInterrupt",
@@ -98,7 +114,21 @@ class ManagedRunService:
             self.workspace_service.save_run(run)
             raise ManagedRunExecutionError(run, workspace, error) from error
 
-        run.transition("succeeded", result={"response": response})
+        result_payload: dict[str, object] = {
+            "response": response,
+            "validation": {
+                "status": validation.status,
+                "path": str(validation_path),
+            },
+        }
+        if validation.status == "passed":
+            run.transition("succeeded", result=result_payload)
+        else:
+            result_payload.update({
+                "error_type": "ValidationFailed",
+                "error": "One or more approved validation commands did not pass",
+            })
+            run.transition("failed", result=result_payload)
         self.workspace_service.save_run(run)
         return ManagedRunResult(
             record=record,
@@ -106,6 +136,8 @@ class ManagedRunService:
             workspace=workspace,
             runtime=runtime,
             response=response,
+            validation=validation,
+            validation_path=validation_path,
         )
 
 
@@ -144,6 +176,9 @@ def _managed_task(record: PlanRecord) -> str:
         *section("Acceptance criteria:", acceptance),
         "",
         *section("Approved validation commands:", [" ".join(command) for command in plan.validation_commands]),
+        "",
+        "FeaturePilot will execute every approved validation command after this Agent turn.",
+        "Do not invoke validation commands yourself; finish the implementation and return your summary.",
         "",
         "When implementation is complete, return a concise summary of the work performed.",
     ]
