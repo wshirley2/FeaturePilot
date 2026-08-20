@@ -102,6 +102,8 @@ def test_plan_chat_requires_explicit_approval_then_runs_in_workspace(tmp_path, m
     assert "计划尚未批准" in rendered
     assert "Managed Run 执行与验证完成" in rendered
     assert "系统验证：passed" in rendered
+    assert "Events:" in rendered
+    assert (metadata_paths[0].parent / "events.jsonl").is_file()
 
 
 def test_plan_chat_natural_language_revision_creates_next_version(tmp_path, monkeypatch):

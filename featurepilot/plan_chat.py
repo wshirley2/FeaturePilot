@@ -194,6 +194,12 @@ class PlanChatSession:
         except ManagedRunExecutionError as error:
             self.console.print(f"[red]{error}[/red]")
             self.console.print(f"Workspace 已保留：{error.workspace.path}")
+            if error.events_path:
+                self.console.print(f"Events: {error.events_path}")
+            if error.patch_path:
+                self.console.print(f"Patch: {error.patch_path}")
+            if error.report_path:
+                self.console.print(f"Report: {error.report_path}")
             return PlanTurnResult("completed", 1)
 
         assert self.last_result is not None
@@ -206,6 +212,9 @@ class PlanChatSession:
             f"[{validation_style}]系统验证：{validation.status}[/{validation_style}] "
             f"({self.last_result.validation_path})"
         )
+        self.console.print(f"Events: {self.last_result.events_path}")
+        self.console.print(f"Patch: {self.last_result.patch_path}")
+        self.console.print(f"Report: {self.last_result.report_path}")
         if self.last_result.run.status != "succeeded":
             self.console.print("[red]Managed Run 验证未通过，Workspace 已保留。[/red]")
             self.console.print(f"Run: {self.last_result.run.display_id}")

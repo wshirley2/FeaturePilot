@@ -103,6 +103,10 @@ def _only_run_metadata(tmp_path: Path) -> tuple[Path, dict]:
     return paths[0], json.loads(paths[0].read_text(encoding="utf-8"))
 
 
+def _events(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
 def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
@@ -115,6 +119,9 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
         )]),
         LLMResponse(content="Managed change complete."),
     ])
+    provider.total_prompt_tokens = 120
+    provider.total_completion_tokens = 30
+    provider.estimated_cost = 0.0125
 
     result = _service(tmp_path, store, provider).execute(record.reference)
 
@@ -123,12 +130,21 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
     assert result.run.result["validation"]["status"] == "passed"
     assert result.validation.status == "passed"
     assert result.validation_path == result.workspace.path.parent / "validation.json"
+    assert result.events_path == result.workspace.path.parent / "events.jsonl"
     assert isinstance(result.runtime.agent.tool_executor, WorkspaceToolExecutor)
     assert result.runtime.repository == result.workspace.path.resolve()
     assert (result.workspace.path / "app.py").read_text(encoding="utf-8") == "VALUE = 'managed'\n"
     assert (repository / "app.py").read_text(encoding="utf-8") == "VALUE = 'source'\n"
     metadata = json.loads((result.workspace.path.parent / "run.json").read_text(encoding="utf-8"))
     assert metadata["status"] == "succeeded"
+    assert metadata["result"]["artifacts"] == {
+        "events": str(result.events_path),
+        "patch": str(result.patch_path),
+        "validation": str(result.validation_path),
+        "report": str(result.report_path),
+    }
+    assert metadata["result"]["changes"]["files"][0]["path"] == "app.py"
+    assert metadata["result"]["metrics"]["total_tokens"] == 150
     task_prompt = provider.requests[0]["messages"][-1]["content"]
     assert "Change the application value" in task_prompt
     assert "Read and update app.py" in task_prompt
@@ -143,6 +159,45 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
     assert artifact["commands"][0]["resolved_argv"][0] == sys.executable
     assert artifact["commands"][0]["cwd"] == str(result.workspace.path.resolve())
     assert artifact["commands"][0]["exit_code"] == 0
+    assert result.patch_path == result.workspace.path.parent / "changes.patch"
+    assert result.report_path == result.workspace.path.parent / "report.md"
+    assert result.events_path.is_file()
+    assert result.patch_path.is_file()
+    assert result.report_path.is_file()
+    assert {path.name for path in result.workspace.path.parent.iterdir()} == {
+        "changes.patch",
+        "events.jsonl",
+        "report.md",
+        "run.json",
+        "validation.json",
+        "workspace",
+    }
+    assert [change.path for change in result.changes.files] == ["app.py"]
+    assert result.changes.files[0].planned
+    patch = result.patch_path.read_text(encoding="utf-8")
+    assert "-VALUE = 'source'" in patch
+    assert "+VALUE = 'managed'" in patch
+    report = result.report_path.read_text(encoding="utf-8")
+    assert "# FeaturePilot Managed Run Report" in report
+    assert "Managed change complete." in report
+    assert "| modified | `app.py` | yes |" in report
+    assert "Prompt tokens: 120" in report
+    assert "Completion tokens: 30" in report
+    assert "$0.012500 USD" in report
+    assert f"Events: `{result.events_path}`" in report
+    events = _events(result.events_path)
+    event_types = [event["event_type"] for event in events]
+    assert event_types[:2] == ["run_created", "run_started"]
+    assert event_types[-4:] == [
+        "validation_completed",
+        "changes_generated",
+        "report_generated",
+        "run_finished",
+    ]
+    assert "tool_requested" in event_types
+    assert "tool_completed" in event_types
+    assert {event["run_id"] for event in events} == {result.run.id}
+    assert events[-1]["payload"]["status"] == "succeeded"
 
 
 @pytest.mark.parametrize("status", ["draft", "rejected"])
@@ -177,6 +232,11 @@ def test_plan_outside_write_is_denied_while_run_can_finish(tmp_path, monkeypatch
     assert not (result.workspace.path / "outside.txt").exists()
     tool_result = provider.requests[1]["messages"][-1]["content"]
     assert tool_result.startswith("Policy denied write_file")
+    completed = [
+        event for event in _events(result.events_path)
+        if event["event_type"] == "tool_completed"
+    ]
+    assert completed[0]["payload"]["result"].startswith("Policy denied write_file")
 
 
 def test_provider_failure_persists_failed_run_and_retains_workspace(tmp_path, monkeypatch):
@@ -191,11 +251,21 @@ def test_provider_failure_persists_failed_run_and_retains_workspace(tmp_path, mo
     assert isinstance(failure.value.cause, RuntimeError)
     metadata_path, metadata = _only_run_metadata(tmp_path)
     assert metadata["status"] == "failed"
-    assert metadata["result"] == {
-        "error_type": "RuntimeError",
-        "error": "provider unavailable",
-    }
+    assert metadata["result"]["error_type"] == "RuntimeError"
+    assert metadata["result"]["error"] == "provider unavailable"
+    assert metadata["result"]["artifacts"]["validation"] is None
+    events_path = metadata_path.parent / "events.jsonl"
+    assert failure.value.events_path == events_path
+    assert failure.value.patch_path == metadata_path.parent / "changes.patch"
+    assert failure.value.report_path == metadata_path.parent / "report.md"
+    report = failure.value.report_path.read_text(encoding="utf-8")
+    assert "RuntimeError: provider unavailable" in report
+    assert "Status: **failed**" in report
     assert (metadata_path.parent / "workspace" / "app.py").is_file()
+    events = _events(events_path)
+    assert "turn_failed" in [event["event_type"] for event in events]
+    assert events[-1]["event_type"] == "run_finished"
+    assert events[-1]["payload"]["status"] == "failed"
 
 
 def test_keyboard_interrupt_persists_cancelled_run_and_retains_workspace(tmp_path, monkeypatch):
@@ -211,6 +281,12 @@ def test_keyboard_interrupt_persists_cancelled_run_and_retains_workspace(tmp_pat
     assert metadata["status"] == "cancelled"
     assert metadata["result"]["error_type"] == "KeyboardInterrupt"
     assert (metadata_path.parent / "workspace" / "app.py").is_file()
+    assert (metadata_path.parent / "changes.patch").is_file()
+    assert (metadata_path.parent / "report.md").is_file()
+    events = _events(metadata_path.parent / "events.jsonl")
+    assert "turn_interrupted" in [event["event_type"] for event in events]
+    assert events[-1]["event_type"] == "run_finished"
+    assert events[-1]["payload"]["status"] == "cancelled"
 
 
 def test_run_cli_executes_approved_plan_with_the_shared_bootstrap(tmp_path, monkeypatch, capsys):
@@ -241,6 +317,9 @@ def test_run_cli_executes_approved_plan_with_the_shared_bootstrap(tmp_path, monk
     output = capsys.readouterr().out
     assert "Managed Run succeeded." in output
     assert "Validation: passed" in output
+    assert "Patch:" in output
+    assert "Report:" in output
+    assert "Events:" in output
     metadata_path, metadata = _only_run_metadata(tmp_path)
     assert metadata["status"] == "succeeded"
     assert (metadata_path.parent / "workspace" / "app.py").read_text(encoding="utf-8") == "VALUE = 'from-cli'\n"
@@ -276,6 +355,8 @@ def test_run_cli_returns_failure_when_system_validation_fails(tmp_path, monkeypa
     assert metadata["status"] == "failed"
     artifact = json.loads((metadata_path.parent / "validation.json").read_text(encoding="utf-8"))
     assert artifact["commands"][0]["exit_code"] == 7
+    events = _events(metadata_path.parent / "events.jsonl")
+    assert events[-1]["payload"]["status"] == "failed"
 
 
 def test_validation_failure_marks_run_failed_and_preserves_all_command_results(tmp_path, monkeypatch):
@@ -298,8 +379,15 @@ def test_validation_failure_marks_run_failed_and_preserves_all_command_results(t
     assert result.validation.commands[0].stdout == "bad\n"
     assert result.validation.commands[0].stderr == "details\n"
     assert (result.workspace.path / "second-ran.txt").read_text(encoding="utf-8") == "yes"
+    assert result.changes.out_of_plan_files == ["second-ran.txt"]
+    report = result.report_path.read_text(encoding="utf-8")
+    assert "Out-of-plan files changed: second-ran.txt" in report
     _, metadata = _only_run_metadata(tmp_path)
     assert metadata["status"] == "failed"
+    events = _events(result.events_path)
+    validation_event = next(event for event in events if event["event_type"] == "validation_completed")
+    assert validation_event["payload"]["status"] == "failed"
+    assert events[-1]["payload"]["status"] == "failed"
 
 
 def test_validation_timeout_and_startup_error_are_distinct_artifact_results(tmp_path, monkeypatch):

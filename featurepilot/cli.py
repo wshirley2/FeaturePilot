@@ -295,6 +295,12 @@ def _run_managed(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
     except ManagedRunExecutionError as error:
         console.print(f"[red]{error}[/red]")
         console.print(f"Workspace retained at {error.workspace.path}")
+        if error.events_path:
+            console.print(f"Events: {error.events_path}")
+        if error.patch_path:
+            console.print(f"Patch: {error.patch_path}")
+        if error.report_path:
+            console.print(f"Report: {error.report_path}")
         return 1
     except (OSError, ValueError) as error:
         parser.error(str(error))
@@ -310,6 +316,9 @@ def _run_managed(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
         f"[{validation_style}]Validation: {result.validation.status}[/{validation_style}] "
         f"({result.validation_path})"
     )
+    console.print(f"Events: {result.events_path}")
+    console.print(f"Patch: {result.patch_path}")
+    console.print(f"Report: {result.report_path}")
     if result.run.status != "succeeded":
         console.print("[red]Managed Run failed validation. Workspace retained.[/red]")
         console.print(f"Run: {result.run.display_id}")
