@@ -136,6 +136,7 @@ def test_write_is_denied_without_interactive_prompt_and_never_reaches_disk(tmp_p
 
     assert result.startswith("Permission denied write_file")
     assert not target.exists()
+    assert executor.consume_turn_stop_message() is None
 
 
 def test_unregistered_network_or_unknown_tools_are_not_misclassified_as_reads(tmp_path):

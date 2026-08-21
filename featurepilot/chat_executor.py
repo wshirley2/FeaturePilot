@@ -55,6 +55,22 @@ class RepositoryToolExecutor:
             DenyPermissionPrompt(),
         )
         self._side_effect_lock = threading.Lock()
+        self._turn_stop_lock = threading.Lock()
+        self._turn_stop_message: str | None = None
+
+    def begin_turn(self) -> None:
+        """Clear the optional stop request left by the previous Chat turn."""
+
+        with self._turn_stop_lock:
+            self._turn_stop_message = None
+
+    def consume_turn_stop_message(self) -> str | None:
+        """Return and clear a user-denial request to end the current turn."""
+
+        with self._turn_stop_lock:
+            message = self._turn_stop_message
+            self._turn_stop_message = None
+            return message
 
     def execute(self, tool: Tool, arguments: dict[str, Any]) -> str:
         return self.execute_call(tool, arguments, tool_call_id=uuid4().hex)
@@ -129,6 +145,7 @@ class RepositoryToolExecutor:
         )
         decision = self.permission_manager.authorize(request)
         if decision.action is not PermissionAction.ALLOW:
+            self._stop_after_interactive_denial("bash", decision)
             return _denied("bash", decision.reason)
         return tool.execute_in(
             command,
@@ -167,6 +184,7 @@ class RepositoryToolExecutor:
             )
             decision = self.permission_manager.authorize(request, force_prompt=force_prompt)
             if decision.action is not PermissionAction.ALLOW:
+                self._stop_after_interactive_denial(tool.name, decision)
                 return _denied(tool.name, decision.reason)
             try:
                 proposal.apply()
@@ -216,6 +234,17 @@ class RepositoryToolExecutor:
         except ValueError as error:
             raise ValueError(f"path is outside repository: {value}") from error
         return candidate
+
+    def _stop_after_interactive_denial(self, tool_name: str, decision) -> None:
+        """Stop retry loops only when a user explicitly rejected an ASK request."""
+
+        if decision.action is not PermissionAction.DENY or not decision.prompted:
+            return
+        with self._turn_stop_lock:
+            self._turn_stop_message = (
+                f"已按你的拒绝停止本轮后续操作；{tool_name} 没有执行。"
+                "你可以继续说明下一步需求。"
+            )
 
 
 def _denied(tool_name: str, reason: str) -> str:

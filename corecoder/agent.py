@@ -76,6 +76,7 @@ class Agent:
         turn_id = uuid4().hex
         round_index = 0
         pending_tool_calls = []
+        self._begin_tool_turn()
         self._emit_event(
             RuntimeEventType.TURN_STARTED,
             turn_id,
@@ -140,6 +141,9 @@ class Agent:
                         "tool_call_id": tc.id,
                         "content": result,
                     })
+                    stop_message = self._consume_tool_turn_stop()
+                    if stop_message is not None:
+                        return self._finish_stopped_turn(turn_id, round_index, stop_message)
                 else:
                     # parallel execution for multiple tool calls
                     results = self._exec_tools_parallel(
@@ -154,6 +158,9 @@ class Agent:
                             "tool_call_id": tc.id,
                             "content": result,
                         })
+                    stop_message = self._consume_tool_turn_stop()
+                    if stop_message is not None:
+                        return self._finish_stopped_turn(turn_id, round_index, stop_message)
                 pending_tool_calls = []
 
                 # compress if tool outputs are big
@@ -220,6 +227,33 @@ class Agent:
             # Runtime observers are diagnostic consumers. Their failures must
             # not change the model/tool transaction they are observing.
             pass
+
+    def _begin_tool_turn(self) -> None:
+        """Give application executors a chance to reset per-turn control state."""
+
+        begin_turn = getattr(self.tool_executor, "begin_turn", None)
+        if begin_turn is not None:
+            begin_turn()
+
+    def _consume_tool_turn_stop(self) -> str | None:
+        """Read an optional application request to end this turn after a tool reply."""
+
+        consume = getattr(self.tool_executor, "consume_turn_stop_message", None)
+        if consume is None:
+            return None
+        return consume()
+
+    def _finish_stopped_turn(self, turn_id: str, round_index: int, message: str) -> str:
+        """Close a valid tool transaction without inviting another tool-retry round."""
+
+        self.messages.append({"role": "assistant", "content": message})
+        self._emit_event(
+            RuntimeEventType.TURN_COMPLETED,
+            turn_id,
+            round_index,
+            payload={"content": message, "stopped_after_tool": True},
+        )
+        return message
 
     def _emit_context_compressed(self, turn_id: str, round_index: int, *, phase: str) -> None:
         self._emit_event(

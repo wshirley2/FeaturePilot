@@ -89,6 +89,7 @@ class PermissionDecision:
     action: PermissionAction
     reason: str
     grant_scope: PermissionGrantScope = PermissionGrantScope.ONCE
+    prompted: bool = False
 
     @classmethod
     def allow(
@@ -163,10 +164,16 @@ class PermissionManager:
                     return granted
 
             user_decision = self.prompt.decide(request)
+            prompted = not isinstance(self.prompt, DenyPermissionPrompt)
             if user_decision.action is PermissionAction.ASK:
                 return PermissionDecision.deny("Permission prompt returned an unresolved ASK decision")
             if user_decision.action is PermissionAction.DENY:
-                return user_decision
+                return PermissionDecision(
+                    user_decision.action,
+                    user_decision.reason,
+                    user_decision.grant_scope,
+                    prompted=prompted,
+                )
 
             if user_decision.grant_scope is PermissionGrantScope.SESSION:
                 self._session_grants.add(self._session_key(request))
@@ -174,7 +181,12 @@ class PermissionManager:
                 if not request.command_prefix:
                     return PermissionDecision.deny("This request does not support a command-prefix grant")
                 self._command_prefix_grants.add(request.command_prefix)
-            return user_decision
+            return PermissionDecision(
+                user_decision.action,
+                user_decision.reason,
+                user_decision.grant_scope,
+                prompted=prompted,
+            )
 
     def clear_session_grants(self) -> None:
         """Drop all grants when the owning Chat session ends."""

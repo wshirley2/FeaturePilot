@@ -178,7 +178,7 @@ def test_chat_end_to_end_reads_edits_validates_and_continues_without_network(tmp
     assert [request.tool_name for request in prompt.requests] == ["edit_file"]
 
 
-def test_rejected_write_returns_a_tool_result_and_agent_continues(tmp_path, monkeypatch):
+def test_rejected_write_stops_the_current_turn_without_retrying_tools(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     target = tmp_path / "notes.txt"
     target.write_text("original\n", encoding="utf-8")
@@ -188,7 +188,6 @@ def test_rejected_write_returns_a_tool_result_and_agent_continues(tmp_path, monk
             "edit_file",
             {"file_path": "notes.txt", "old_string": "original", "new_string": "changed"},
         )]),
-        LLMResponse(content="写入被拒绝，我保留了原文件并停止修改。"),
     ])
     output = StringIO()
     console = Console(file=output, force_terminal=False, color_system=None)
@@ -197,14 +196,37 @@ def test_rejected_write_returns_a_tool_result_and_agent_continues(tmp_path, monk
 
     response = runtime.agent.chat("修改 notes.txt")
 
-    assert response == "写入被拒绝，我保留了原文件并停止修改。"
+    assert response == "已按你的拒绝停止本轮后续操作；edit_file 没有执行。你可以继续说明下一步需求。"
     assert target.read_text(encoding="utf-8") == "original\n"
-    assert len(provider.requests) == 2
-    tool_messages = [
-        message for message in provider.requests[1]["messages"] if message.get("role") == "tool"
-    ]
-    assert tool_messages[-1]["content"] == "Permission denied edit_file: test rejection"
+    assert len(provider.requests) == 1
+    assert runtime.agent.messages[-2] == {
+        "role": "tool",
+        "tool_call_id": "edit-denied",
+        "content": "Permission denied edit_file: test rejection",
+    }
+    assert runtime.agent.messages[-1]["content"] == response
     assert "edit_file: denied" in output.getvalue()
+
+
+def test_policy_denial_still_allows_a_safe_explanation_from_the_agent(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "dangerous-command",
+            "bash",
+            {"command": "git reset --hard"},
+        )]),
+        LLMResponse(content="该危险命令已被系统拦截，未执行。"),
+    ])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    runtime = make_runtime(tmp_path, provider, console)
+
+    response = runtime.agent.chat("执行 git reset --hard")
+
+    assert response == "该危险命令已被系统拦截，未执行。"
+    assert len(provider.requests) == 2
+    assert "bash: denied" in output.getvalue()
 
 
 def test_chat_commands_and_eof_are_local_and_do_not_call_provider(monkeypatch):
