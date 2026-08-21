@@ -4,33 +4,38 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from corecoder.permissions import (
+    PermissionAction,
+    PermissionDecision,
+    PermissionEffect,
+)
+
 from .context import ExecutionContext
 
-
-class ToolEffect(str, Enum):
-    """The observable side effect class used for policy and scheduling."""
-
-    READ = "read"
-    WRITE = "write"
-    EXECUTE = "execute"
-    NETWORK = "network"
-    DELEGATE = "delegate"
-    UNKNOWN = "unknown"
+ToolEffect = PermissionEffect
 
 
 @dataclass(frozen=True, slots=True)
 class PolicyDecision:
     """A policy result, including normalized arguments for an allowed request."""
 
-    allowed: bool
+    action: PermissionAction
     reason: str
     effect: ToolEffect
     arguments: dict[str, Any] = field(default_factory=dict)
     validation_command: tuple[str, ...] | None = None
+
+    @property
+    def allowed(self) -> bool:
+        return self.action is PermissionAction.ALLOW
+
+    def to_permission_decision(self) -> PermissionDecision:
+        """Expose the Managed result through the reusable C3 protocol."""
+
+        return PermissionDecision(self.action, self.reason)
 
 
 class ToolPolicy:
@@ -70,11 +75,11 @@ class ToolPolicy:
 
     @staticmethod
     def _allow(effect: ToolEffect, arguments: dict[str, Any], reason: str) -> PolicyDecision:
-        return PolicyDecision(True, reason, effect, dict(arguments))
+        return PolicyDecision(PermissionAction.ALLOW, reason, effect, dict(arguments))
 
     @staticmethod
     def _deny(effect: ToolEffect, reason: str) -> PolicyDecision:
-        return PolicyDecision(False, reason, effect)
+        return PolicyDecision(PermissionAction.DENY, reason, effect)
 
     def _read_file(self, arguments: dict[str, Any], context: ExecutionContext) -> PolicyDecision:
         path = self._path_argument("read_file", arguments, "file_path", context)
@@ -155,7 +160,7 @@ class ToolPolicy:
         normalized = dict(arguments)
         normalized["command"] = command
         return PolicyDecision(
-            True,
+            PermissionAction.ALLOW,
             "Command exactly matches an approved Plan validation command",
             ToolEffect.EXECUTE,
             normalized,

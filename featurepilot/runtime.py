@@ -10,10 +10,12 @@ from corecoder.agent import Agent, ToolExecutor
 from corecoder.config import Config
 from corecoder.events import EventSink
 from corecoder.llm import LLM, LiteLLM
+from corecoder.permissions import DenyPermissionPrompt, PermissionManager, PermissionPrompt
 from corecoder.tools import get_tool
 from corecoder.tools.base import Tool
 
 from .chat_executor import RepositoryToolExecutor
+from .permissions import ChatPermissionPolicy
 from .repository import RepositoryProfiler
 from .repository.profiler import RepositoryProfile
 
@@ -32,6 +34,7 @@ class RuntimeBootstrapInput:
     tools: list[Tool] | None = None
     system_context: str | None = None
     permission_mode: str | None = None
+    permission_prompt: PermissionPrompt | None = None
 
 
 @dataclass
@@ -42,7 +45,8 @@ class ChatRuntime:
     tools: list[Tool]
     profile: RepositoryProfile | None
     profile_warning: str | None
-    permission_mode: str = "legacy tool safety; file paths scoped, C3 approval pending"
+    permission_mode: str = "repository reads allowed; writes and commands policy-gated"
+    permission_manager: PermissionManager | None = None
 
 
 class RuntimeBootstrap:
@@ -92,15 +96,19 @@ class RuntimeBootstrap:
         system_context = "\n\n".join(
             part for part in (repository_context, inputs.system_context) if part
         )
+        permission_manager = None
+        tool_executor = inputs.tool_executor
+        if tool_executor is None:
+            permission_manager = PermissionManager(
+                ChatPermissionPolicy(profile.validation_commands if profile else ()),
+                inputs.permission_prompt or DenyPermissionPrompt(),
+            )
+            tool_executor = RepositoryToolExecutor(repository, permission_manager)
         agent = Agent(
             llm=provider,
             tools=tools,
             max_context_tokens=config.max_context_tokens,
-            tool_executor=(
-                inputs.tool_executor
-                if inputs.tool_executor is not None
-                else RepositoryToolExecutor(repository)
-            ),
+            tool_executor=tool_executor,
             event_sink=inputs.event_sink,
             working_directory=str(repository),
             assistant_name="FeaturePilot",
@@ -113,7 +121,11 @@ class RuntimeBootstrap:
             tools=tools,
             profile=profile,
             profile_warning=profile_warning,
-            permission_mode=(inputs.permission_mode or "legacy tool safety; file paths scoped, C3 approval pending"),
+            permission_mode=(
+                inputs.permission_mode
+                or "repository reads allowed; writes and commands policy-gated"
+            ),
+            permission_manager=permission_manager,
         )
 
     def _build_provider(self, config: Config):

@@ -264,6 +264,13 @@ class Agent:
             return f"Error: bad arguments for {tc.name}: {e}"
         try:
             if self.tool_executor is not None:
+                execute_call = getattr(self.tool_executor, "execute_call", None)
+                if execute_call is not None:
+                    return execute_call(
+                        tool,
+                        dict(tc.arguments),
+                        tool_call_id=tc.id,
+                    )
                 return self.tool_executor.execute(tool, dict(tc.arguments))
             return tool.execute(**tc.arguments)
         except Exception as e:

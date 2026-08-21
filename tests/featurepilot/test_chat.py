@@ -7,10 +7,12 @@ import subprocess
 import sys
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 from rich.console import Console
 
 from corecoder.llm import LLMResponse, ToolCall
+from corecoder.permissions import PermissionDecision
 from featurepilot.chat import ChatSession, TerminalEventSink
 from featurepilot.chat_executor import RepositoryToolExecutor
 from featurepilot.cli import _normalize_command
@@ -39,10 +41,35 @@ class FakeProvider:
         return response
 
 
-def make_runtime(repository: Path, provider: FakeProvider, console: Console):
+class AllowOncePrompt:
+    def __init__(self):
+        self.requests = []
+
+    def decide(self, request):
+        self.requests.append(request)
+        return PermissionDecision.allow("test approval")
+
+
+class DenyPrompt(AllowOncePrompt):
+    def decide(self, request):
+        self.requests.append(request)
+        return PermissionDecision.deny("test rejection")
+
+
+def make_runtime(
+    repository: Path,
+    provider: FakeProvider,
+    console: Console,
+    *,
+    permission_prompt=None,
+):
     sink = TerminalEventSink(console)
     bootstrap = RuntimeBootstrap(provider_factory=lambda config: provider)
-    return bootstrap.build(RuntimeBootstrapInput(repository=repository, event_sink=sink))
+    return bootstrap.build(RuntimeBootstrapInput(
+        repository=repository,
+        event_sink=sink,
+        permission_prompt=permission_prompt,
+    ))
 
 
 def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(monkeypatch):
@@ -132,7 +159,8 @@ def test_chat_end_to_end_reads_edits_validates_and_continues_without_network(tmp
     ])
     output = StringIO()
     console = Console(file=output, force_terminal=False, color_system=None, width=120)
-    runtime = make_runtime(repository, provider, console)
+    prompt = AllowOncePrompt()
+    runtime = make_runtime(repository, provider, console, permission_prompt=prompt)
     inputs = iter(["完成一个小修改并运行测试", "总结刚才做了什么", "/exit"])
 
     assert ChatSession(runtime, console=console, input_fn=lambda prompt: next(inputs)).run() == 0
@@ -147,6 +175,36 @@ def test_chat_end_to_end_reads_edits_validates_and_continues_without_network(tmp
     assert "修改和测试已经完成。" in rendered
     assert "我还记得刚才的修改。" in rendered
     assert len(provider.requests) == 5
+    assert [request.tool_name for request in prompt.requests] == ["edit_file"]
+
+
+def test_rejected_write_returns_a_tool_result_and_agent_continues(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    target = tmp_path / "notes.txt"
+    target.write_text("original\n", encoding="utf-8")
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "edit-denied",
+            "edit_file",
+            {"file_path": "notes.txt", "old_string": "original", "new_string": "changed"},
+        )]),
+        LLMResponse(content="写入被拒绝，我保留了原文件并停止修改。"),
+    ])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    prompt = DenyPrompt()
+    runtime = make_runtime(tmp_path, provider, console, permission_prompt=prompt)
+
+    response = runtime.agent.chat("修改 notes.txt")
+
+    assert response == "写入被拒绝，我保留了原文件并停止修改。"
+    assert target.read_text(encoding="utf-8") == "original\n"
+    assert len(provider.requests) == 2
+    tool_messages = [
+        message for message in provider.requests[1]["messages"] if message.get("role") == "tool"
+    ]
+    assert tool_messages[-1]["content"] == "Permission denied edit_file: test rejection"
+    assert "edit_file: denied" in output.getvalue()
 
 
 def test_chat_commands_and_eof_are_local_and_do_not_call_provider(monkeypatch):
@@ -170,6 +228,27 @@ def test_chat_commands_and_eof_are_local_and_do_not_call_provider(monkeypatch):
     assert "Current model:" in rendered
     assert "Bye!" in rendered
     assert provider.requests == []
+
+
+def test_diff_does_not_leak_a_parent_git_worktree(monkeypatch, tmp_path):
+    parent = tmp_path / "parent-repository"
+    repository = parent / "temporary-copy"
+    repository.mkdir(parents=True)
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    session = ChatSession(SimpleNamespace(repository=repository), console=console)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs["cwd"]))
+        return subprocess.CompletedProcess(command, 0, stdout=str(parent), stderr="")
+
+    monkeypatch.setattr("featurepilot.chat.subprocess.run", fake_run)
+
+    session._show_diff()
+
+    assert calls == [(["git", "rev-parse", "--show-toplevel"], repository)]
+    assert "已避免展示父级仓库的变更" in output.getvalue()
 
 
 def test_ctrl_c_cancels_only_current_turn_and_chat_continues(monkeypatch):

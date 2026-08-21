@@ -225,9 +225,31 @@ class ChatSession:
 
     def _show_diff(self) -> None:
         try:
+            root_result = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=self.runtime.repository,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self.console.print(f"[red]Could not read Git diff: {error}[/red]")
+            return
+        repository = self.runtime.repository.resolve()
+        git_root = Path(root_result.stdout.strip()).resolve() if root_result.returncode == 0 else None
+        if git_root != repository:
+            self.console.print(
+                "[yellow]当前目录不是独立 Git 仓库，已避免展示父级仓库的变更。"
+                "可使用 /files 查看本次会话修改的文件。[/yellow]"
+            )
+            return
+        try:
             result = subprocess.run(
                 ["git", "diff", "--no-ext-diff"],
-                cwd=self.runtime.repository,
+                cwd=repository,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -345,7 +367,7 @@ def _summarize(value: str, limit: int) -> str:
 
 def _tool_status(result: str) -> str:
     lowered = result.lstrip().lower()
-    if lowered.startswith(("policy denied", "⚠ blocked")):
+    if lowered.startswith(("policy denied", "permission denied", "⚠ blocked")):
         return "denied"
     if lowered.startswith("error") or "[exit code:" in lowered:
         return "error"

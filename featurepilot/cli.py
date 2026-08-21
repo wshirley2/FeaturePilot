@@ -14,6 +14,7 @@ from .chat import ChatSession, TerminalEventSink
 from .domain import PlanRecord, Task
 from .domain.task import TASK_TYPES
 from .managed import ManagedRunExecutionError, ManagedRunService
+from .permissions import TerminalPermissionPrompt
 from .plan_chat import PlanChatSession
 from .planning import PlanningService, PlanStore, PlanValidationError
 from .repository import RepositoryProfiler
@@ -251,6 +252,7 @@ def _run_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             model=args.model,
             base_url=args.base_url,
             api_key=args.api_key,
+            permission_prompt=TerminalPermissionPrompt(console),
         ))
     except ValueError as error:
         parser.error(str(error))
