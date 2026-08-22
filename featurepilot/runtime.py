@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -69,6 +70,10 @@ class RuntimeBootstrap:
         config = Config.from_env()
         if inputs.model:
             config.model = inputs.model
+        elif featurepilot_model := os.getenv("FEATUREPILOT_MODEL"):
+            # FeaturePilot owns the public model setting. Config.from_env()
+            # still supplies CORECODER_MODEL as a compatibility fallback.
+            config.model = featurepilot_model
         if inputs.base_url:
             config.base_url = inputs.base_url
         if inputs.api_key:
@@ -76,7 +81,7 @@ class RuntimeBootstrap:
 
         if self.provider_factory is None and not config.api_key:
             raise ValueError(
-                "No API key found. Set OPENAI_API_KEY, DEEPSEEK_API_KEY, or CORECODER_API_KEY."
+                "No API key found. Set OPENAI_API_KEY or pass --api-key."
             )
 
         profile = None

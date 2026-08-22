@@ -96,6 +96,28 @@ def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(mo
     }
 
 
+def test_featurepilot_model_setting_overrides_legacy_config_but_not_cli(monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("CORECODER_MODEL", "legacy-corecoder-model")
+    monkeypatch.delenv("FEATUREPILOT_MODEL", raising=False)
+    console = Console(file=StringIO(), force_terminal=False, color_system=None)
+
+    def build(model=None):
+        return RuntimeBootstrap(provider_factory=lambda config: FakeProvider([])).build(
+            RuntimeBootstrapInput(
+                repository=BENCHMARK_ROOT,
+                event_sink=TerminalEventSink(console),
+                model=model,
+            )
+        )
+
+    assert build().config.model == "legacy-corecoder-model"
+
+    monkeypatch.setenv("FEATUREPILOT_MODEL", "featurepilot-model")
+    assert build().config.model == "featurepilot-model"
+    assert build("command-line-model").config.model == "command-line-model"
+
+
 def test_repository_executor_denies_paths_outside_repository(tmp_path):
     repository = tmp_path / "repository"
     repository.mkdir()
