@@ -150,7 +150,7 @@ def test_chat_end_to_end_reads_edits_validates_and_continues_without_network(tmp
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     repository = tmp_path / "cli_data_tool"
     shutil.copytree(BENCHMARK_ROOT, repository)
-    read_path = "src/cli_data_tool/cli.py"
+    read_path = "src/cli_data_tool/exporter.py"
     original = (repository / read_path).read_text(encoding="utf-8")
     old = 'return "\\n".join(items)'
     new = 'return "\\n".join(str(item) for item in items)'
@@ -193,7 +193,7 @@ def test_chat_end_to_end_reads_edits_validates_and_continues_without_network(tmp
     assert "→ read_file" in rendered
     assert "← edit_file: completed" in rendered
     assert "← bash: completed" in rendered
-    assert "2 passed" in rendered
+    assert "3 passed" in rendered
     assert "修改和测试已经完成。" in rendered
     assert "我还记得刚才的修改。" in rendered
     assert len(provider.requests) == 5
