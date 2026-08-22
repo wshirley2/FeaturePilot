@@ -22,6 +22,12 @@ python -m cli_data_tool.cli export
 python -m cli_data_tool.cli export --items one two
 ```
 
+## 代码结构
+
+- `src/cli_data_tool/cli.py`：命令行参数解析和入口；
+- `src/cli_data_tool/exporter.py`：导出内容的格式化逻辑；
+- `tests/`：命令入口和导出逻辑的测试。
+
 当前版本还不支持 JSON 输出。后续任务是增加 `--format json`，同时保持默认的 text 行为不变。
 
 ## 验证

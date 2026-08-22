@@ -2,12 +2,9 @@
 
 import argparse
 
+from cli_data_tool.exporter import export_text
+
 DEFAULT_ITEMS = ["alpha", "beta", "gamma"]
-
-
-def export_text(items: list[str]) -> str:
-    """Return the original text representation of exported items."""
-    return "\n".join(items)
 
 
 def build_parser() -> argparse.ArgumentParser:
