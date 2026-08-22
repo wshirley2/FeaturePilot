@@ -58,7 +58,10 @@ class PlanStore:
                 raise ValueError(f"Could not read saved plan {path.name}: {error}") from error
             if repository_path is None or record.repository == repository_path:
                 records.append(record)
-        return sorted(records, key=lambda record: record.created_at, reverse=True)
+        # ISO timestamps normally preserve creation order, but two drafts can
+        # share the same timestamp on a fast filesystem or coarse clock.
+        # Version is the deterministic tie-breaker for successive drafts.
+        return sorted(records, key=lambda record: (record.created_at, record.version), reverse=True)
 
     def load(self, reference: str) -> PlanRecord:
         """Load one saved Plan by its name/version or full/short generated id."""

@@ -63,6 +63,12 @@ def test_plan_store_versions_and_decisions(tmp_path):
     assert second.version == 2
     assert first.reference == "first-draft-v1"
     assert second.reference == "first-draft-v2"
+
+    # A fast or coarse clock may give successive drafts the same timestamp;
+    # PlanStore must still return the newer version first.
+    first.created_at = second.created_at
+    store._write(first)
+    store._write(second)
     assert [record.version for record in store.list(repository=BENCHMARK_ROOT)] == [2, 1]
 
     approved = store.approve(first.reference)
