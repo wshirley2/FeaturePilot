@@ -163,7 +163,9 @@ class ChatSession:
             f"Tools: {', '.join(tool.name for tool in self.runtime.tools)}",
             *profile_lines,
             *(
-                ["Plan: say ‘先制定计划：<任务>’ for approved isolated execution."]
+                [
+                    "Plan：输入“先制定计划：<任务>”进入 Plan 模式；明确回复“批准并执行”后才会创建隔离 Workspace。"
+                ]
                 if self.plan_session is not None
                 else []
             ),
@@ -204,7 +206,7 @@ class ChatSession:
             "/clear   Clear conversation messages",
         ]
         if self.plan_session is not None:
-            lines.append("/plan    Enter Plan mode (natural language also works)")
+            lines.append("/plan    进入 Plan 模式；也可以说“先制定计划：<任务>”")
         lines.extend([
             "/save, /sessions  Available after C4 event sessions",
             "/exit    Exit Chat",

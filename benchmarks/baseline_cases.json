@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "suite": "FeaturePilot E2-lite deterministic baseline",
+  "repository_fixture": "benchmarks/cli_data_tool",
+  "cases": [
+    {
+      "id": "chat-read-only",
+      "title": "Chat 只读分析",
+      "mode": "chat",
+      "test": "tests/featurepilot/test_chat.py::test_chat_read_only_inspects_benchmark_without_modifying_files",
+      "expected": {
+        "source_repository": "unchanged",
+        "permission_prompt": "not_required",
+        "tool_action_count": 1
+      }
+    },
+    {
+      "id": "chat-approved-change",
+      "title": "Chat 批准修改并验证",
+      "mode": "chat",
+      "test": "tests/featurepilot/test_chat.py::test_chat_end_to_end_reads_edits_validates_and_continues_without_network",
+      "expected": {
+        "source_repository": "modified_after_approval",
+        "validation": "passed",
+        "tool_action_count": 3
+      }
+    },
+    {
+      "id": "chat-denied-write",
+      "title": "Chat 拒绝写入",
+      "mode": "chat",
+      "test": "tests/featurepilot/test_chat.py::test_rejected_write_stops_the_current_turn_without_retrying_tools",
+      "expected": {
+        "source_repository": "unchanged",
+        "permission_prompt": "denied",
+        "tool_action_count": 1
+      }
+    },
+    {
+      "id": "managed-run-isolation",
+      "title": "Managed Run 审批、隔离执行与产物保留",
+      "mode": "managed_run",
+      "test": "tests/featurepilot/test_plan_chat.py::test_plan_chat_requires_explicit_approval_then_runs_in_workspace",
+      "expected": {
+        "source_repository": "unchanged",
+        "workspace": "created",
+        "validation": "passed",
+        "artifacts": ["run.json", "events.jsonl"]
+      }
+    }
+  ]
+}

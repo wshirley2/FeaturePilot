@@ -146,6 +146,28 @@ def test_default_cli_spelling_enters_chat_for_current_or_explicit_repository():
     assert _normalize_command(["profile", str(BENCHMARK_ROOT)]) == ["profile", str(BENCHMARK_ROOT)]
 
 
+def test_chat_read_only_inspects_benchmark_without_modifying_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = tmp_path / "cli_data_tool"
+    shutil.copytree(BENCHMARK_ROOT, repository)
+    read_path = "README.md"
+    original = (repository / read_path).read_bytes()
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall("read-1", "read_file", {"file_path": read_path})]),
+        LLMResponse(content="仓库说明已读取，未修改文件。"),
+    ])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    runtime = make_runtime(repository, provider, console)
+    inputs = iter(["读取 README 并说明项目，不要修改文件", "/exit"])
+
+    assert ChatSession(runtime, console=console, input_fn=lambda prompt: next(inputs)).run() == 0
+
+    assert (repository / read_path).read_bytes() == original
+    assert "← read_file: completed" in output.getvalue()
+    assert len(provider.requests) == 2
+
+
 def test_chat_end_to_end_reads_edits_validates_and_continues_without_network(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     repository = tmp_path / "cli_data_tool"
@@ -265,9 +287,11 @@ def test_chat_commands_and_eof_are_local_and_do_not_call_provider(monkeypatch):
         except StopIteration as error:
             raise EOFError from error
 
-    assert ChatSession(runtime, console=console, input_fn=input_fn).run() == 0
+    assert ChatSession(runtime, console=console, input_fn=input_fn, plan_session=object()).run() == 0
     rendered = output.getvalue()
     assert "FeaturePilot Commands" in rendered
+    assert "先制定计划：<任务>" in rendered
+    assert "/plan" in rendered
     assert "Event-based session save/resume is planned for C4" in rendered
     assert "Current model:" in rendered
     assert "Bye!" in rendered

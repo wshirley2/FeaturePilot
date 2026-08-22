@@ -2,7 +2,7 @@
 
 > 一个面向本地代码仓库的 CLI Coding Agent：先自然语言交流，再在需要时生成 Plan，并在隔离 Workspace 中执行可审查的任务。
 
-FeaturePilot 将普通 Chat 与受控执行结合在一起：你可以先让 Agent 解释代码、定位问题；当任务需要落盘时，可以查看真实 Diff、决定是否允许，再运行验证。对于更完整的开发任务，则可以先审阅 Plan，明确批准后才创建隔离 Workspace 并执行。
+FeaturePilot 把“理解任务到交付变更”放在同一个 Task Runtime 中：你可以直接开始对话，也可以先审阅 Plan、明确批准后再进入隔离 Workspace。两条路径共享 Agent、Runtime、权限和交付产物，只是任务控制程度不同。
 
 ## 项目状态
 
@@ -18,9 +18,9 @@ FeaturePilot 将普通 Chat 与受控执行结合在一起：你可以先让 Age
 | Validation、Patch、Report、单次 Run 事件产物 | 已实现 |
 | 跨回合 Session 保存、恢复、预算 | 规划中（C4） |
 
-当前自动化基线：`189 passed, 1 skipped`。跳过项是 Windows 当前环境缺少创建符号链接的权限，不代表功能失败。
+当前自动化基线：`191 passed, 1 skipped`。另有一套 C4 前 E2-lite 基测为 `4/4 passed`。跳过项是 Windows 当前环境缺少创建符号链接的权限，不代表功能失败。
 
-## 两种工作方式
+## 同一 Task Runtime 的两条路径
 
 ### Chat：像和编程助手对话
 
@@ -219,9 +219,9 @@ featurepilot plan approve json-export-v1
 featurepilot run json-export-v1
 ```
 
-## Chat 与 Managed Run 的区别
+## 直接任务路径与计划控制路径
 
-| | Chat | Managed Run |
+| | 直接任务路径（Chat） | 计划控制路径（Managed Run） |
 |---|---|---|
 | 使用场景 | 探索、问答、小范围协作 | 需要可审查闭环的开发任务 |
 | 代码位置 | 用户当前仓库 | 隔离 Workspace |
@@ -281,7 +281,7 @@ CoreCoder 是一个面向学习和二次开发的最小 AI Coding Agent；Featur
 ```text
 已完成：Chat、Plan、Managed Run、Validation、Patch、Report、权限确认、Trusted Diff
 进行中：C4 事件式 Session、恢复、取消与预算
-后续：C5 副作用感知并发、M2 Managed Run 增强、评测与公开 Demo 包装
+后续：C4 完成后统一 Task Runtime 与目录结构，再进入 C5 副作用感知并发、M2 Managed Run 增强、评测与公开 Demo 包装
 ```
 
 ## 致谢与许可
