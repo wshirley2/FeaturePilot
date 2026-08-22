@@ -4,6 +4,7 @@ from pathlib import Path
 from featurepilot.cli import main
 from featurepilot.planning import PlanningService
 from featurepilot.runtime import RuntimeBootstrap
+from featurepilot.sessions import SessionStore
 
 BENCHMARK_ROOT = Path(__file__).parents[2] / "benchmarks" / "cli_data_tool"
 
@@ -201,3 +202,18 @@ def test_default_chat_entry_injects_the_embedded_plan_session(tmp_path, monkeypa
     assert result == 9
     assert captured["runtime"].repository == repository.resolve()
     assert captured["plan_session"] is not None
+
+
+def test_sessions_commands_list_and_show_event_sessions(tmp_path, capsys):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    store = SessionStore.for_repository(repository)
+    store.create("session-for-cli", repository_root=repository, model="fake-model")
+
+    assert main(["sessions", "list", str(repository)]) == 0
+    assert "session-for-cli" in capsys.readouterr().out
+
+    assert main(["sessions", "show", "session-for-cli", str(repository)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["session_id"] == "session-for-cli"
+    assert payload["model"] == "fake-model"

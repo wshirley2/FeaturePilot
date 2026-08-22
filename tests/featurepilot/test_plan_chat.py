@@ -128,6 +128,20 @@ def test_plan_chat_natural_language_revision_creates_next_version(tmp_path, monk
     latest = next(record for record in records if record.version == 2)
     assert latest.plan.summary == "Append revised verification note to README.md"
     assert "已将输入作为新的完整任务描述" in output.getvalue()
+
+
+def test_plan_chat_shortcuts_keep_safe_non_execution_defaults(tmp_path):
+    repository = _repository(tmp_path)
+    session, _store, output = _session(tmp_path, repository, FakeProvider([]), [])
+
+    session.handle("Append a note to README.md")
+    assert session.record is not None and session.record.status == "draft"
+    assert session.handle("2").action == "continue"
+    assert session.record.status == "draft"
+    assert session.handle("3").action == "completed"
+    assert session.record.status == "rejected"
+    assert not list((tmp_path / "runs").glob("*/run.json"))
+    assert "[1] 批准并执行" in output.getvalue()
     assert not (tmp_path / "runs").exists()
 
 

@@ -9,16 +9,66 @@ from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
+from prompt_toolkit.document import Document
 from rich.console import Console
 
+from corecoder.events import RuntimeEvent, RuntimeEventType
 from corecoder.llm import LLMResponse, ToolCall
 from corecoder.permissions import PermissionDecision
-from featurepilot.chat import ChatSession, TerminalEventSink
+from featurepilot.chat import ChatSession, SlashCommandCompleter, TerminalEventSink
 from featurepilot.chat_executor import RepositoryToolExecutor
 from featurepilot.cli import _normalize_command
 from featurepilot.runtime import RuntimeBootstrap, RuntimeBootstrapInput
 
 BENCHMARK_ROOT = Path(__file__).parents[2] / "benchmarks" / "cli_data_tool"
+
+
+def test_slash_command_completer_lists_and_filters_local_commands():
+    completer = SlashCommandCompleter()
+
+    all_commands = [item.text for item in completer.get_completions(Document("/"), None)]
+    assert "/help" in all_commands
+    assert "/status" in all_commands
+    assert "/exit" in all_commands
+
+    status_commands = [item.text for item in completer.get_completions(Document("/s"), None)]
+    assert "/status" in status_commands
+    assert "/sessions" in status_commands
+    assert "/help" not in status_commands
+
+
+def test_slash_command_completer_only_shows_plan_when_plan_session_is_available():
+    assert "/plan" not in [item.text for item in SlashCommandCompleter().get_completions(Document("/"), None)]
+    assert "/plan" in [
+        item.text for item in SlashCommandCompleter(include_plan=True).get_completions(Document("/"), None)
+    ]
+
+
+def test_limit_backfilled_read_file_is_rendered_as_not_executed():
+    output = StringIO()
+    sink = TerminalEventSink(Console(file=output, force_terminal=False, color_system=None))
+    event_args = {
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+        "round_index": 2,
+        "tool_call_id": "call-1",
+    }
+
+    sink.emit(RuntimeEvent(
+        event_type=RuntimeEventType.TOOL_REQUESTED,
+        payload={"tool_name": "read_file", "arguments": {"file_path": "README.md"}},
+        **event_args,
+    ))
+    sink.emit(RuntimeEvent(
+        event_type=RuntimeEventType.TOOL_COMPLETED,
+        payload={"tool_name": "read_file", "result": "[limit reached]", "interrupted": False},
+        **event_args,
+    ))
+
+    rendered = output.getvalue()
+    assert "← read_file: not executed" in rendered
+    assert "已读取 15 个字符" not in rendered
+    assert "未执行：达到运行限制" in rendered
 
 
 class FakeProvider:
@@ -85,6 +135,8 @@ def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(mo
     assert "src/cli_data_tool/cli.py" in runtime.profile.entrypoints
     assert "Repository root:" in runtime.agent._system
     assert "This is a lightweight profile" in runtime.agent._system
+    assert "Product: FeaturePilot" in runtime.agent._system
+    assert f"Current model: {runtime.config.model}" in runtime.agent._system
     assert {tool.name for tool in runtime.tools} == {
         "read_file",
         "glob",
@@ -273,13 +325,17 @@ def test_policy_denial_still_allows_a_safe_explanation_from_the_agent(tmp_path, 
     assert "bash: denied" in output.getvalue()
 
 
-def test_chat_commands_and_eof_are_local_and_do_not_call_provider(monkeypatch):
+def test_chat_commands_and_eof_are_local_and_do_not_call_provider(monkeypatch, tmp_path):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     provider = FakeProvider([])
     output = StringIO()
     console = Console(file=output, force_terminal=False, color_system=None)
-    runtime = make_runtime(BENCHMARK_ROOT, provider, console)
-    commands = iter(["/help", "/status", "/tools", "/files", "/diff", "/tokens", "/compact", "/save", "/sessions", "/model", "/clear"])
+    runtime = RuntimeBootstrap(provider_factory=lambda config: provider).build(RuntimeBootstrapInput(
+        repository=BENCHMARK_ROOT,
+        event_sink=TerminalEventSink(console),
+        session_directory=tmp_path / "sessions",
+    ))
+    commands = iter(["/help", "/status", "/tools", "/files", "/diff", "/tokens", "/compact", "/save", "/sessions", "/session show", "/model", "/clear"])
 
     def input_fn(prompt):
         try:
@@ -292,9 +348,34 @@ def test_chat_commands_and_eof_are_local_and_do_not_call_provider(monkeypatch):
     assert "FeaturePilot Commands" in rendered
     assert "先制定计划：<任务>" in rendered
     assert "/plan" in rendered
-    assert "Event-based session save/resume is planned for C4" in rendered
+    assert "自动保存已开启" in rendered
+    assert "FeaturePilot Sessions" in rendered
+    assert "Session details" in rendered
     assert "Current model:" in rendered
     assert "Bye!" in rendered
+    assert provider.requests == []
+
+
+def test_status_shows_live_session_and_context_summary_without_startup_panel(tmp_path):
+    provider = FakeProvider([])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    runtime = RuntimeBootstrap(provider_factory=lambda config: provider).build(RuntimeBootstrapInput(
+        repository=tmp_path,
+        event_sink=TerminalEventSink(console),
+        session_directory=tmp_path / "sessions",
+    ))
+
+    ChatSession(runtime, console=console)._show_status()
+
+    rendered = output.getvalue()
+    assert "Session ID" in rendered
+    assert runtime.agent.session_id in rendered
+    assert "Context" in rendered
+    assert "Usage" in rendered
+    assert "Estimated cost" in rendered
+    assert "Repository" not in rendered
+    assert "FeaturePilot Chat" not in rendered
     assert provider.requests == []
 
 

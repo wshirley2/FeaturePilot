@@ -16,9 +16,9 @@ FeaturePilot 把“理解任务到交付变更”放在同一个 Task Runtime �
 | Plan 创建、修订、明确批准 | 已实现 |
 | 隔离 Workspace 中的 Managed Run | 已实现 |
 | Validation、Patch、Report、单次 Run 事件产物 | 已实现 |
-| 跨回合 Session 保存、恢复、预算 | 规划中（C4） |
+| 跨回合 Session 保存、恢复、取消与预算 | 已实现（C4） |
 
-当前自动化基线：`191 passed, 1 skipped`。另有一套 C4 前 E2-lite 基测为 `4/4 passed`。跳过项是 Windows 当前环境缺少创建符号链接的权限，不代表功能失败。
+当前自动化基线：`203 passed, 1 skipped`。另有一套 C4 前 E2-lite 基测为 `4/4 passed`。跳过项是 Windows 当前环境缺少创建符号链接的权限，不代表功能失败。
 
 ## 同一 Task Runtime 的两条路径
 
@@ -123,6 +123,9 @@ featurepilot benchmarks\cli_data_tool
 # 如果终端不能识别 featurepilot：
 # python -m featurepilot.cli benchmarks\cli_data_tool
 
+# 如果要单独体验 C4 Session，建议使用独立目录
+# featurepilot benchmarks\cli_data_tool --sessions-dir .tmp\c4-demo
+
 # 2. 在 Chat 中输入
 分析这个仓库的功能、入口文件和测试方式，不要修改代码。
 
@@ -135,6 +138,30 @@ Get-Content benchmarks\cli_data_tool\README.md | Select-Object -Last 5
 ```
 
 如果看到 `demo verification`，说明 Chat 的读取、Diff 展示和受控写入流程正常。
+
+在 Chat 中还可以体验 C4 Session：
+
+```text
+/status
+/save
+/sessions
+/session show <session-id>
+/compact
+/resume <session-id>
+```
+
+退出后也可以从 CLI 查询和恢复：
+
+```powershell
+featurepilot sessions list benchmarks\cli_data_tool --sessions-dir .tmp\c4-demo
+featurepilot chat benchmarks\cli_data_tool --sessions-dir .tmp\c4-demo --resume <session-id>
+```
+
+运行限制可以通过 Chat 启动参数体验，例如限制一次回合最多执行一批工具调用：
+
+```powershell
+featurepilot benchmarks\cli_data_tool --sessions-dir .tmp\c4-limit --max-tool-rounds 1
+```
 
 想验证完整的 Plan / Managed Run 流程，可以退出 Chat 后执行：
 
@@ -240,8 +267,10 @@ featurepilot run json-export-v1
 | `featurepilot plan create ...` | 通过高级命令创建草稿 Plan |
 | `featurepilot plan approve <reference>` | 批准 Plan |
 | `featurepilot run <reference>` | 执行已批准的 Plan |
+| `featurepilot sessions list <repository>` | 列出可恢复的 Chat Session |
+| `featurepilot sessions show <session-id> <repository>` | 查看 Session 事件摘要与恢复警告 |
 
-Chat 内可用 `/help` 查看命令；常用的有 `/status`、`/tools`、`/files`、`/diff`、`/tokens`、`/model` 和 `/exit`。
+Chat 内可用 `/help` 查看命令；常用的有 `/status`、`/save`、`/sessions`、`/session show`、`/resume`、`/tools`、`/files`、`/diff`、`/tokens`、`/compact`、`/model` 和 `/exit`。
 
 ## 验证开发环境
 
@@ -270,18 +299,19 @@ CoreCoder 是一个面向学习和二次开发的最小 AI Coding Agent；Featur
 
 ## 当前限制与路线
 
-- Chat 的跨回合 Session 保存、恢复和预算控制仍处于 C4 规划中；
+- C4 的跨回合 Session 保存、恢复、取消和预算控制已完成；下一步是统一 Task Runtime 契约与目录结构；
 - `events.jsonl` 当前记录单次 Managed Run，不等同于可恢复的 Chat Session；
 - Bash 有路径策略与危险命令拦截，但不是容器或系统级沙箱；
 - 工具调用依赖模型服务正确返回标准 Tool Calling；部分本地模型可能只输出看似工具调用的普通文本；
+- 过程提示的节奏收敛、限制拦截结果的终端降噪仍在产品优化项中持续评估；
 - 当前重点是本地 CLI 工作流，不提供 Web、多用户协作或 MCP 平台能力。
 
 ## 路线图
 
 ```text
-已完成：Chat、Plan、Managed Run、Validation、Patch、Report、权限确认、Trusted Diff
-进行中：C4 事件式 Session、恢复、取消与预算
-后续：C4 完成后统一 Task Runtime 与目录结构，再进入 C5 副作用感知并发、M2 Managed Run 增强、评测与公开 Demo 包装
+已完成：Chat、Plan、Managed Run、Validation、Patch、Report、权限确认、Trusted Diff、C4 Session/取消/预算
+当前：C4 后统一 Task Runtime 与目录结构
+后续：C5 副作用感知并发、M2 Managed Run 增强、评测与公开 Demo 包装
 ```
 
 ## 致谢与许可

@@ -17,12 +17,14 @@ from corecoder.permissions import (
     PermissionPrompt,
     PermissionRequest,
 )
+from corecoder.runtime_control import CancellationToken, RuntimeLimits
 from corecoder.tools import ALL_TOOLS
 
 __all__ = [
     "ALL_TOOLS",
     "LLM",
     "Agent",
+    "CancellationToken",
     "Config",
     "DenyPermissionPrompt",
     "EventSink",
@@ -36,5 +38,6 @@ __all__ = [
     "PermissionRequest",
     "RuntimeEvent",
     "RuntimeEventType",
+    "RuntimeLimits",
     "__version__",
 ]

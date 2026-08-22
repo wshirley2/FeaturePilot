@@ -9,6 +9,8 @@ from pathlib import Path
 
 from rich.console import Console
 
+from corecoder.runtime_control import RuntimeLimits
+
 from . import __version__
 from .chat import ChatSession, TerminalEventSink
 from .domain import PlanRecord, Task
@@ -19,11 +21,12 @@ from .plan_chat import PlanChatSession
 from .planning import PlanningService, PlanStore, PlanValidationError
 from .repository import RepositoryProfiler
 from .runtime import RuntimeBootstrap, RuntimeBootstrapInput
+from .sessions import SessionStore
 from .workspace import CopyWorkspaceBackend, WorkspaceService
 
 _PLAN_COMMANDS = {"chat", "create", "list", "show", "approve", "reject", "regenerate"}
 _DEFAULT_STORE_DIR = Path(".featurepilot/plans")
-_TOP_LEVEL_COMMANDS = {"chat", "run", "status", "profile", "plan", "plans", "workspace"}
+_TOP_LEVEL_COMMANDS = {"chat", "run", "status", "profile", "plan", "plans", "workspace", "sessions", "session"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,6 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("-m", "--model", help="Override the configured model.")
     chat_parser.add_argument("--base-url", help="Override the OpenAI-compatible API base URL.")
     chat_parser.add_argument("--api-key", help="Override the configured API key.")
+    chat_parser.add_argument("--resume", help="Resume an event Session for this repository.")
+    chat_parser.add_argument("--sessions-dir", type=Path, help="Directory containing event Session JSONL files.")
+    _add_runtime_limits(chat_parser)
     chat_parser.add_argument("--runs-dir", type=Path, default=Path("runs"), help=argparse.SUPPRESS)
     _add_store_directory(chat_parser)
 
@@ -148,6 +154,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     workspace_create_parser.add_argument("--json", action="store_true", help="Print the Run metadata as JSON.")
     _add_store_directory(workspace_create_parser)
+
+    sessions_parser = subparsers.add_parser("sessions", aliases=["session"], help="Inspect recoverable Chat Sessions.")
+    sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_command", required=True)
+    sessions_list_parser = sessions_subparsers.add_parser("list", help="List event Sessions for a repository.")
+    sessions_list_parser.add_argument("repository", nargs="?", type=Path, default=Path("."))
+    sessions_list_parser.add_argument("--sessions-dir", type=Path)
+    sessions_show_parser = sessions_subparsers.add_parser("show", help="Show one event Session and recovery warnings.")
+    sessions_show_parser.add_argument("session_id")
+    sessions_show_parser.add_argument("repository", nargs="?", type=Path, default=Path("."))
+    sessions_show_parser.add_argument("--sessions-dir", type=Path)
     return parser
 
 
@@ -166,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_profile(parser, args)
     if args.command == "workspace":
         return _run_workspace_create(parser, args)
+    if args.command in {"sessions", "session"}:
+        return _run_sessions(parser, args)
     if args.command not in {"plan", "plans"}:
         parser.print_help()
         return 0
@@ -217,6 +235,16 @@ def _add_store_directory(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--store-dir", type=Path, default=_DEFAULT_STORE_DIR, help=argparse.SUPPRESS)
 
 
+def _add_runtime_limits(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("runtime limits")
+    group.add_argument("--max-provider-calls", type=int, help="Stop a turn after this many provider calls.")
+    group.add_argument("--max-tool-rounds", type=int, help="Stop a turn before another tool-call round.")
+    group.add_argument("--max-turn-seconds", type=float, help="Stop at the next safe boundary after this duration.")
+    group.add_argument("--max-input-tokens", type=int, help="Maximum projected input context tokens.")
+    group.add_argument("--max-total-tokens", type=int, help="Maximum provider-reported tokens for one turn.")
+    group.add_argument("--max-cost-usd", type=float, help="Maximum estimated provider cost for one turn.")
+
+
 def _normalize_legacy_plan_command(argv: list[str] | None) -> list[str]:
     """Keep the former `plan <repository> --task ...` spelling working."""
 
@@ -253,6 +281,9 @@ def _run_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             base_url=args.base_url,
             api_key=args.api_key,
             permission_prompt=TerminalPermissionPrompt(console),
+            session_directory=args.sessions_dir,
+            resume_session_id=args.resume,
+            limits=_runtime_limits_for(args),
         ))
     except ValueError as error:
         parser.error(str(error))
@@ -273,6 +304,53 @@ def _run_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         api_key=args.api_key,
     )
     return ChatSession(runtime, console=console, plan_session=plan_session).run()
+
+
+def _runtime_limits_for(args: argparse.Namespace) -> RuntimeLimits:
+    return RuntimeLimits(
+        max_provider_calls=getattr(args, "max_provider_calls", None),
+        max_tool_rounds=getattr(args, "max_tool_rounds", None),
+        max_turn_seconds=getattr(args, "max_turn_seconds", None),
+        max_input_tokens=getattr(args, "max_input_tokens", None),
+        max_total_tokens=getattr(args, "max_total_tokens", None),
+        max_cost_usd=getattr(args, "max_cost_usd", None),
+    )
+
+
+def _run_sessions(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    if not args.repository.is_dir():
+        parser.error(f"Repository directory does not exist: {args.repository}")
+    store = SessionStore.for_repository(args.repository.resolve(), args.sessions_dir)
+    if args.sessions_command == "list":
+        records = store.list()
+        if not records:
+            print("No saved Sessions.")
+            return 0
+        for item in records:
+            print(
+                f"{item.session_id}\t{item.status}\t{item.model or '?'}\t"
+                f"events={len(item.events)}\twarnings={len(item.warnings)}"
+            )
+        return 0
+    try:
+        item = store.replay(args.session_id)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    payload = {
+        "session_id": item.session_id,
+        "repository_root": str(item.repository_root) if item.repository_root else None,
+        "model": item.model,
+        "mode": item.mode,
+        "status": item.status,
+        "event_count": len(item.events),
+        "message_count": len(item.messages),
+        "model_message_count": len(item.model_messages),
+        "prompt_tokens": item.prompt_tokens,
+        "completion_tokens": item.completion_tokens,
+        "warnings": item.warnings,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
 
 
 def _run_managed(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:

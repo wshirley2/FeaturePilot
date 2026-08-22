@@ -12,6 +12,7 @@ from corecoder.config import Config
 from corecoder.events import EventSink
 from corecoder.llm import LLM, LiteLLM
 from corecoder.permissions import DenyPermissionPrompt, PermissionManager, PermissionPrompt
+from corecoder.runtime_control import RuntimeLimits
 from corecoder.tools import get_tool
 from corecoder.tools.base import Tool
 
@@ -19,6 +20,7 @@ from .chat_executor import RepositoryToolExecutor
 from .permissions import ChatPermissionPolicy
 from .repository import RepositoryProfiler
 from .repository.profiler import RepositoryProfile
+from .sessions import SessionEventSink, SessionProjection, SessionStore
 
 ProviderFactory = Callable[[Config], object]
 _CHAT_TOOL_NAMES = ("read_file", "glob", "grep", "edit_file", "write_file", "bash", "now")
@@ -36,6 +38,9 @@ class RuntimeBootstrapInput:
     system_context: str | None = None
     permission_mode: str | None = None
     permission_prompt: PermissionPrompt | None = None
+    session_directory: Path | None = None
+    resume_session_id: str | None = None
+    limits: RuntimeLimits | None = None
 
 
 @dataclass
@@ -48,6 +53,44 @@ class ChatRuntime:
     profile_warning: str | None
     permission_mode: str = "repository reads allowed; writes and commands policy-gated"
     permission_manager: PermissionManager | None = None
+    session_store: SessionStore | None = None
+    session_sink: SessionEventSink | None = None
+    base_system_context: str = ""
+    mode: str = "Chat"
+
+    def set_model(self, model: str, *, record: bool = True) -> None:
+        """Update both the provider configuration and model-visible runtime facts."""
+
+        self.config.model = model
+        if hasattr(self.agent.llm, "model"):
+            self.agent.llm.model = model
+        self.agent.update_system_context(_with_runtime_identity(self.base_system_context, self.mode, model))
+        if record and self.session_sink is not None:
+            self.session_sink.record("session_model_changed", self.agent.session_id, {"model": model})
+
+    def resume_session(self, session_id: str) -> SessionProjection:
+        """Load a Session projection without replaying prior filesystem effects."""
+
+        if self.session_store is None:
+            raise RuntimeError("Event-based Session storage is not configured")
+        projection = self.session_store.replay(session_id)
+        if projection.repository_root is not None and projection.repository_root != self.repository:
+            raise ValueError("Session belongs to a different repository")
+        self.agent.session_id = projection.session_id
+        self.agent.messages = projection.model_messages
+        if projection.model:
+            self.set_model(projection.model, record=False)
+        if self.permission_manager is not None:
+            # Grants are intentionally process-local. A resumed session always
+            # reuses C3's Trusted Diff and fresh approval path.
+            self.permission_manager.clear_session_grants()
+        if self.session_sink is not None:
+            self.session_sink.record("session_resumed", projection.session_id, {
+                "repository_root": str(self.repository),
+                "event_count": len(projection.events),
+                "warnings": projection.warnings,
+            })
+        return projection
 
 
 class RuntimeBootstrap:
@@ -96,11 +139,21 @@ class RuntimeBootstrap:
             if inputs.tools is not None
             else [tool for name in _CHAT_TOOL_NAMES if (tool := get_tool(name)) is not None]
         )
+        session_store = SessionStore.for_repository(repository, inputs.session_directory)
+        resume_projection = None
+        if inputs.resume_session_id:
+            resume_projection = session_store.replay(inputs.resume_session_id)
+            if resume_projection.repository_root is not None and resume_projection.repository_root != repository:
+                raise ValueError("Session belongs to a different repository")
+            if resume_projection.model and not inputs.model:
+                config.model = resume_projection.model
+
         provider = self._build_provider(config)
         repository_context = _repository_summary(profile, profile_warning)
-        system_context = "\n\n".join(
+        base_system_context = "\n\n".join(
             part for part in (repository_context, inputs.system_context) if part
         )
+        system_context = _with_runtime_identity(base_system_context, "Chat", config.model)
         permission_manager = None
         tool_executor = inputs.tool_executor
         if tool_executor is None:
@@ -109,17 +162,30 @@ class RuntimeBootstrap:
                 inputs.permission_prompt or DenyPermissionPrompt(),
             )
             tool_executor = RepositoryToolExecutor(repository, permission_manager)
+        session_id = resume_projection.session_id if resume_projection is not None else None
+        session_sink = SessionEventSink(session_store, inputs.event_sink)
         agent = Agent(
             llm=provider,
             tools=tools,
             max_context_tokens=config.max_context_tokens,
             tool_executor=tool_executor,
-            event_sink=inputs.event_sink,
+            event_sink=session_sink,
+            session_id=session_id,
             working_directory=str(repository),
             assistant_name="FeaturePilot",
             system_context=system_context,
+            limits=inputs.limits,
         )
-        return ChatRuntime(
+        if resume_projection is not None:
+            agent.messages = resume_projection.model_messages
+        else:
+            session_store.create(
+                agent.session_id,
+                repository_root=repository,
+                model=config.model,
+                mode="chat",
+            )
+        runtime = ChatRuntime(
             repository=repository,
             config=config,
             agent=agent,
@@ -131,7 +197,13 @@ class RuntimeBootstrap:
                 or "repository reads allowed; writes and commands policy-gated"
             ),
             permission_manager=permission_manager,
+            session_store=session_store,
+            session_sink=session_sink,
+            base_system_context=base_system_context,
         )
+        if resume_projection is not None:
+            runtime.resume_session(resume_projection.session_id)
+        return runtime
 
     def _build_provider(self, config: Config):
         if self.provider_factory is not None:
@@ -163,3 +235,17 @@ def _repository_summary(profile: RepositoryProfile | None, warning: str | None) 
         f"Validation commands: {values(commands)}",
         "This is a lightweight profile. Read detailed files only when needed.",
     ])
+
+
+def _with_runtime_identity(base_context: str, mode: str, model: str) -> str:
+    """Inject only runtime facts that the Agent may safely explain to the user."""
+
+    identity = "\n".join([
+        "Runtime identity (authoritative facts):",
+        "Product: FeaturePilot",
+        f"Mode: {mode}",
+        f"Current model: {model}",
+        "For questions about product, mode, or model, answer from these facts without calling tools.",
+        "Do not reveal API keys, endpoints, or other provider secrets.",
+    ])
+    return "\n\n".join(part for part in (base_context, identity) if part)

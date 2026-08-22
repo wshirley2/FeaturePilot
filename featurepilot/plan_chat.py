@@ -102,6 +102,26 @@ class PlanChatSession:
         if self.record is None:
             self._create_initial_draft(user_input)
             return PlanTurnResult()
+        if normalized == "1":
+            if self.record.status == "draft":
+                self.record = self.plan_store.approve(self.record.reference)
+            return self._execute_approved()
+        if normalized == "2":
+            if self.record.status == "draft":
+                self.console.print("[cyan]请继续输入新的完整任务描述来修订计划。[/cyan]")
+            else:
+                self.console.print("[yellow]已批准的计划不能再修改；请回复“执行”或“退出”。[/yellow]")
+            return PlanTurnResult()
+        if normalized == "3":
+            if self.record.status != "draft":
+                self.console.print(f"计划当前状态为 {self.record.status}，不能再次拒绝。")
+                return PlanTurnResult()
+            self.record = self.plan_store.reject(
+                self.record.reference,
+                "用户通过快捷选项拒绝",
+            )
+            self.console.print(f"[yellow]已拒绝计划 {self.record.reference}，未执行。[/yellow]")
+            return PlanTurnResult("completed")
         if normalized in _SHOW:
             self._show_plan(self.record)
             return PlanTurnResult()
@@ -247,7 +267,12 @@ class PlanChatSession:
             values(commands),
         ])
         self.console.print(Panel(body, title=f"Plan {record.reference}"))
-        self.console.print("回复“批准并执行”，或输入新的完整任务描述生成修订版本。")
+        self.console.print(
+            "[1] 批准并执行\n"
+            "[2] 继续修改\n"
+            "[3] 拒绝计划\n"
+            "请选择 > 输入 1 / 2 / 3；也可继续使用“批准并执行”等明确文字。"
+        )
 
 
 def _normalize_intent(value: str) -> str:
