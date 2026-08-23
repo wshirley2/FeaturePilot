@@ -55,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("-m", "--model", help="Override the configured model.")
     run_parser.add_argument("--base-url", help="Override the OpenAI-compatible API base URL.")
     run_parser.add_argument("--api-key", help="Override the configured API key.")
+    _add_runtime_limits(run_parser)
     _add_store_directory(run_parser)
 
     profile_parser = subparsers.add_parser("profile", help="Analyze a local repository and print JSON.")
@@ -79,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_chat_parser.add_argument("-m", "--model", help="Override the configured model used during execution.")
     plan_chat_parser.add_argument("--base-url", help="Override the OpenAI-compatible API base URL.")
     plan_chat_parser.add_argument("--api-key", help="Override the configured API key.")
+    _add_runtime_limits(plan_chat_parser)
     _add_store_directory(plan_chat_parser)
 
     create_parser = plan_subparsers.add_parser("create", help="Create and save a draft Plan.")
@@ -302,6 +304,7 @@ def _run_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         model=args.model,
         base_url=args.base_url,
         api_key=args.api_key,
+        limits=_runtime_limits_for(args),
     )
     return ChatSession(runtime, console=console, plan_session=plan_session).run()
 
@@ -347,6 +350,7 @@ def _run_sessions(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         "task_id": item.task_id,
         "run_id": item.run_id,
         "status": item.status,
+        "last_result": item.last_result.to_dict() if item.last_result else None,
         "event_count": len(item.events),
         "message_count": len(item.messages),
         "model_message_count": len(item.model_messages),
@@ -373,6 +377,7 @@ def _run_managed(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
             model=args.model,
             base_url=args.base_url,
             api_key=args.api_key,
+            limits=_runtime_limits_for(args),
         )
     except KeyboardInterrupt:
         console.print("[yellow]Managed Run cancelled. Workspace retained.[/yellow]")
@@ -396,19 +401,29 @@ def _run_managed(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
 
     if not sink.last_turn_streamed and result.response:
         console.print(result.response)
-    validation_style = "green" if result.validation.status == "passed" else "red"
-    console.print(
-        f"[{validation_style}]Validation: {result.validation.status}[/{validation_style}] "
-        f"({result.validation_path})"
-    )
+    if result.validation is not None:
+        validation_style = "green" if result.validation.status == "passed" else "red"
+        console.print(
+            f"[{validation_style}]Validation: {result.validation.status}[/{validation_style}] "
+            f"({result.validation_path})"
+        )
+    else:
+        console.print(
+            f"[yellow]Validation: not started ({result.runtime_result.status.value})[/yellow]"
+        )
     console.print(f"Events: {result.events_path}")
     console.print(f"Patch: {result.patch_path}")
     console.print(f"Report: {result.report_path}")
     if result.run.status != "succeeded":
-        console.print("[red]Managed Run failed validation. Workspace retained.[/red]")
+        if result.validation is not None and result.validation.status != "passed":
+            console.print("[red]Managed Run failed validation. Workspace retained.[/red]")
+        else:
+            console.print(
+                f"[yellow]Managed Run ended with {result.run.status}. Workspace retained.[/yellow]"
+            )
         console.print(f"Run: {result.run.display_id}")
         console.print(f"Workspace: {result.workspace.path}")
-        return 1
+        return 130 if result.run.status == "cancelled" else 1
     console.print("[green]Managed Run succeeded.[/green]")
     console.print(f"Run: {result.run.display_id}")
     console.print(f"Workspace: {result.workspace.path}")
@@ -433,6 +448,7 @@ def _run_plan_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         model=args.model,
         base_url=args.base_url,
         api_key=args.api_key,
+        limits=_runtime_limits_for(args),
     )
     try:
         return session.run()

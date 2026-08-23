@@ -1,6 +1,8 @@
-# CoreCoder Baseline
+# CoreCoder 原始基线
 
 日期：2026-08-05
+
+> 这是 FeaturePilot 开发开始前的历史基线，不是当前测试结果。最新验证只在 `docs/开发路线.md` 维护。
 
 ## 当前仓库
 

@@ -9,6 +9,8 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 
+from corecoder.runtime_control import RuntimeLimits
+
 from .domain import PlanRecord, Task
 from .managed import ManagedRunExecutionError, ManagedRunResult, ManagedRunService
 from .planning import PlanningService, PlanStore, PlanValidationError
@@ -47,6 +49,7 @@ class PlanChatSession:
         model: str | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
+        limits: RuntimeLimits | None = None,
     ) -> None:
         self.repository = repository.resolve()
         self.planning_service = planning_service
@@ -57,6 +60,7 @@ class PlanChatSession:
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
+        self.limits = limits
         self.record: PlanRecord | None = None
         self.last_result: ManagedRunResult | None = None
 
@@ -202,6 +206,7 @@ class PlanChatSession:
                 model=self.model,
                 base_url=self.base_url,
                 api_key=self.api_key,
+                limits=self.limits,
             )
         except WorkspaceCreationError as error:
             self.console.print("[red]Managed Run 未启动：无法创建隔离 Workspace。[/red]")
@@ -227,19 +232,30 @@ class PlanChatSession:
         if not getattr(sink, "last_turn_streamed", False) and self.last_result.response:
             self.console.print(self.last_result.response)
         validation = self.last_result.validation
-        validation_style = "green" if validation.status == "passed" else "red"
-        self.console.print(
-            f"[{validation_style}]系统验证：{validation.status}[/{validation_style}] "
-            f"({self.last_result.validation_path})"
-        )
+        if validation is not None:
+            validation_style = "green" if validation.status == "passed" else "red"
+            self.console.print(
+                f"[{validation_style}]系统验证：{validation.status}[/{validation_style}] "
+                f"({self.last_result.validation_path})"
+            )
+        else:
+            self.console.print(
+                f"[yellow]系统验证：未启动（{self.last_result.runtime_result.status.value}）[/yellow]"
+            )
         self.console.print(f"Events: {self.last_result.events_path}")
         self.console.print(f"Patch: {self.last_result.patch_path}")
         self.console.print(f"Report: {self.last_result.report_path}")
         if self.last_result.run.status != "succeeded":
-            self.console.print("[red]Managed Run 验证未通过，Workspace 已保留。[/red]")
+            if validation is not None and validation.status != "passed":
+                self.console.print("[red]Managed Run 验证未通过，Workspace 已保留。[/red]")
+            else:
+                self.console.print(
+                    f"[yellow]Managed Run 以 {self.last_result.run.status} 结束，Workspace 已保留。[/yellow]"
+                )
             self.console.print(f"Run: {self.last_result.run.display_id}")
             self.console.print(f"Workspace: {self.last_result.workspace.path}")
-            return PlanTurnResult("completed", 1)
+            exit_code = 130 if self.last_result.run.status == "cancelled" else 1
+            return PlanTurnResult("completed", exit_code)
         self.console.print("[green]Managed Run 执行与验证完成。[/green]")
         self.console.print(f"Run: {self.last_result.run.display_id}")
         self.console.print(f"Workspace: {self.last_result.workspace.path}")

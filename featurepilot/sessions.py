@@ -15,6 +15,8 @@ from uuid import uuid4
 
 from corecoder.events import EventSink, RuntimeEvent, RuntimeEventType
 
+from .runtime_contracts import TaskRuntimeResult
+
 SESSION_SCHEMA_VERSION = 1
 _SAFE_SESSION_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -102,6 +104,7 @@ class SessionProjection:
     tool_rounds: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    last_result: TaskRuntimeResult | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -190,6 +193,9 @@ class SessionStore:
 
         for event in events:
             payload = event.payload
+            terminal_result = TaskRuntimeResult.from_terminal_event(event.event_type, payload)
+            if terminal_result is not None:
+                projection.last_result = terminal_result
             if event.event_type == "session_created":
                 root = payload.get("repository_root")
                 projection.repository_root = Path(root).resolve() if isinstance(root, str) else None
@@ -208,6 +214,11 @@ class SessionStore:
             elif event.event_type == "session_model_changed":
                 if isinstance(payload.get("model"), str):
                     projection.model = payload["model"]
+            elif event.event_type == "runtime_result_recorded":
+                try:
+                    projection.last_result = TaskRuntimeResult.from_dict(payload)
+                except (KeyError, TypeError, ValueError):
+                    projection.warnings.append("Ignored invalid Runtime result event")
             elif event.event_type == RuntimeEventType.TURN_STARTED.value:
                 user_input = payload.get("user_input")
                 if isinstance(user_input, str):
@@ -317,12 +328,19 @@ class SessionEventSink:
         self.store = store
         self.downstream = downstream
         self.persistence_error: Exception | None = None
+        self.last_result: TaskRuntimeResult | None = None
 
     @property
     def last_turn_streamed(self) -> bool:
         return bool(getattr(self.downstream, "last_turn_streamed", False))
 
     def emit(self, event: RuntimeEvent) -> None:
+        terminal_result = TaskRuntimeResult.from_terminal_event(
+            event.event_type.value,
+            event.payload,
+        )
+        if terminal_result is not None:
+            self.last_result = terminal_result
         try:
             self.store.append_runtime(event)
         except Exception as error:
@@ -334,6 +352,12 @@ class SessionEventSink:
             self.store.append(SessionEvent(event_type=event_type, session_id=session_id, payload=payload or {}))
         except Exception as error:
             self.persistence_error = self.persistence_error or error
+
+    def record_result(self, session_id: str, result: TaskRuntimeResult) -> None:
+        """Persist an orchestration-level result and expose it to the live Runtime."""
+
+        self.last_result = result
+        self.record("runtime_result_recorded", session_id, result.to_dict())
 
     def ensure_persisted(self) -> None:
         if self.persistence_error is not None:

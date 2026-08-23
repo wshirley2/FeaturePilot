@@ -7,6 +7,7 @@ from corecoder.events import CallbackEventSink, RuntimeEvent, RuntimeEventType
 from corecoder.llm import LLMResponse, ToolCall
 from corecoder.runtime_control import CancellationToken, RuntimeLimits
 from corecoder.tools.base import Tool
+from featurepilot.runtime_contracts import RuntimeResultScope, RuntimeResultStatus, TaskRuntimeResult
 from featurepilot.sessions import SessionEvent, SessionEventSink, SessionStore
 
 
@@ -69,6 +70,11 @@ def test_session_replay_rebuilds_valid_tool_history_and_ignores_partial_tail(tmp
     assert projection.messages[2] == {"role": "tool", "tool_call_id": "read-1", "content": "contents"}
     assert projection.messages[-1]["content"] == "README inspected"
     assert projection.total_tokens == 5
+    assert projection.last_result == TaskRuntimeResult(
+        scope=RuntimeResultScope.TURN,
+        status=RuntimeResultStatus.SUCCEEDED,
+        response="README inspected",
+    )
     assert projection.warnings == ["Ignored incomplete trailing Session event"]
 
 
@@ -134,6 +140,9 @@ def test_session_sink_persists_agent_events_and_limits_leave_recoverable_boundar
 
     assert result == "(runtime limit reached: provider_calls)"
     assert projection.status == "limit_reached"
+    assert projection.last_result is not None
+    assert projection.last_result.status is RuntimeResultStatus.LIMIT_REACHED
+    assert projection.last_result.limit == "provider_calls"
     assert projection.messages[-1] == {"role": "tool", "tool_call_id": "echo-1", "content": "echo: one"}
     assert observed[-1].event_type is RuntimeEventType.TURN_LIMIT_REACHED
 
@@ -185,6 +194,9 @@ def test_tool_round_limit_backfills_requested_calls_for_a_valid_resumable_histor
     projection = store.replay("session-4")
 
     assert projection.status == "limit_reached"
+    assert projection.last_result is not None
+    assert projection.last_result.status is RuntimeResultStatus.LIMIT_REACHED
+    assert projection.last_result.limit == "tool_rounds"
     assert projection.messages[-2]["role"] == "assistant"
     assert projection.messages[-2]["tool_calls"][0]["id"] == "echo-2"
     assert projection.messages[-1] == {
@@ -192,3 +204,32 @@ def test_tool_round_limit_backfills_requested_calls_for_a_valid_resumable_histor
         "tool_call_id": "echo-2",
         "content": "[limit reached]",
     }
+
+
+def test_orchestration_result_overrides_turn_result_without_changing_raw_events(tmp_path):
+    store = SessionStore(tmp_path / "sessions")
+    store.create("managed-session", repository_root=tmp_path, model="fake-model")
+    store.append_runtime(_event(
+        RuntimeEventType.TURN_COMPLETED,
+        "managed-session",
+        payload={"content": "agent completed"},
+    ))
+    run_result = TaskRuntimeResult(
+        scope=RuntimeResultScope.RUN,
+        status=RuntimeResultStatus.FAILED,
+        response="agent completed",
+        reason="validation failed",
+        error_type="ValidationFailed",
+    )
+    SessionEventSink(store, CallbackEventSink(lambda event: None)).record_result(
+        "managed-session",
+        run_result,
+    )
+
+    projection = store.replay("managed-session")
+
+    assert projection.last_result == run_result
+    assert [event.event_type for event in projection.events][-2:] == [
+        RuntimeEventType.TURN_COMPLETED.value,
+        "runtime_result_recorded",
+    ]

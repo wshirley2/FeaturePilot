@@ -17,9 +17,10 @@ FeaturePilot 把“理解任务到交付变更”放在同一个 Task Runtime �
 | 隔离 Workspace 中的 Managed Run | 已实现 |
 | Validation、Patch、Report、单次 Run 事件产物 | 已实现 |
 | 跨回合 Session 保存、恢复、取消与预算 | 已实现（C4） |
-| Chat/Managed Run 统一 Runtime 身份契约 | 第一切片已实现 |
+| Chat/Managed Run 统一 Runtime 身份与终止结果契约 | 已实现 |
+| Chat/Managed Run 共用回合级取消与预算控制 | 已实现第一小切片 |
 
-当前自动化基线：`209 passed, 1 skipped`。另有一套 C4 前 E2-lite 基测为 `4/4 passed`。跳过项是 Windows 当前环境缺少创建符号链接的权限，不代表功能失败。
+当前自动化基线：`218 passed, 1 skipped`。另有一套 C4 前 E2-lite 基测为 `4/4 passed`。跳过项是 Windows 当前环境缺少创建符号链接的权限，不代表功能失败。
 
 ## 同一 Task Runtime 的两条路径
 
@@ -164,6 +165,10 @@ featurepilot chat benchmarks\cli_data_tool --sessions-dir .tmp\c4-demo --resume 
 featurepilot benchmarks\cli_data_tool --sessions-dir .tmp\c4-limit --max-tool-rounds 1
 ```
 
+同一组 `--max-provider-calls`、`--max-tool-rounds`、时间、Token 和费用参数也可用于 `featurepilot run`
+与 `featurepilot plan chat`。Managed Run 在 Agent 回合取消或超限后不会继续启动 Validation，而会保留
+Workspace、Events、Patch 和 Report，并记录 `cancelled` 或 `limit_reached`。
+
 想验证完整的 Plan / Managed Run 流程，可以退出 Chat 后执行：
 
 ```powershell
@@ -300,19 +305,20 @@ FeaturePilot 从一个最小 AgentLoop 原型持续演进为面向本地代码�
 
 ## 当前限制与路线
 
-- C4 的跨回合 Session 保存、恢复、取消和预算控制已完成；统一 Task Runtime 身份契约第一切片也已完成，下一步是统一终止状态/结果契约并继续目录收敛；
+- C4、统一 Runtime 身份/结果以及回合级取消与预算控制已完成；下一步收敛 Validation/子进程取消边界与目录结构；
 - `events.jsonl` 当前记录单次 Managed Run，不等同于可恢复的 Chat Session；
 - Bash 有路径策略与危险命令拦截，但不是容器或系统级沙箱；
 - 工具调用依赖模型服务正确返回标准 Tool Calling；部分本地模型可能只输出看似工具调用的普通文本；
 - C4 已限制发送给模型的上下文，但当前 Session 重放仍会构建完整 Events/Messages；超长会话的按需加载、Snapshot 和 Artifact Store 记录在 OPT-013；
 - 过程提示的节奏收敛、限制拦截结果的终端降噪仍在产品优化项中持续评估；
 - 当前重点是本地 CLI 工作流，不提供 Web、多用户协作或 MCP 平台能力。
+- 当前限制参数约束 Agent 回合；Validation 子进程尚未接入同一个 `CancellationToken`，将在后续控制收敛/C5 中处理。
 
 ## 路线图
 
 ```text
-已完成：Chat、Plan、Managed Run、Validation、Patch、Report、权限确认、Trusted Diff、C4 Session/取消/预算、统一 Runtime 身份第一切片
-当前：统一 Task Runtime 终止状态/结果契约与目录收敛
+已完成：Chat、Plan、Managed Run、Validation、Patch、Report、权限确认、Trusted Diff、C4、统一 Runtime 身份/结果、共享回合级取消与预算
+当前：Validation/子进程取消边界与目录收敛
 后续：C5 副作用感知并发、M2 Managed Run 增强、评测与公开 Demo 包装
 ```
 

@@ -10,13 +10,14 @@ import pytest
 
 from corecoder.events import NullEventSink
 from corecoder.llm import LLMResponse, ToolCall
+from corecoder.runtime_control import CancellationToken, RuntimeLimits
 from featurepilot.cli import main
 from featurepilot.domain import Plan, PlanRecord, Task
 from featurepilot.execution import ValidationCommandRunner, ValidationService, WorkspaceToolExecutor
 from featurepilot.managed import ManagedRunExecutionError, ManagedRunService
 from featurepilot.planning import PlanStore
 from featurepilot.runtime import RuntimeBootstrap
-from featurepilot.runtime_contracts import RuntimeMode
+from featurepilot.runtime_contracts import RuntimeMode, RuntimeResultScope, RuntimeResultStatus
 from featurepilot.workspace import CopyWorkspaceBackend, WorkspaceService
 
 
@@ -127,6 +128,9 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
     result = _service(tmp_path, store, provider).execute(record.reference)
 
     assert result.run.status == "succeeded"
+    assert result.runtime_result.scope is RuntimeResultScope.RUN
+    assert result.runtime_result.status is RuntimeResultStatus.SUCCEEDED
+    assert result.runtime.last_result == result.runtime_result
     assert result.run.result["response"] == "Managed change complete."
     assert result.run.result["validation"]["status"] == "passed"
     assert result.validation.status == "passed"
@@ -149,6 +153,7 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
     assert (repository / "app.py").read_text(encoding="utf-8") == "VALUE = 'source'\n"
     metadata = json.loads((result.workspace.path.parent / "run.json").read_text(encoding="utf-8"))
     assert metadata["status"] == "succeeded"
+    assert metadata["result"]["runtime_result"] == result.runtime_result.to_dict()
     assert metadata["result"]["artifacts"] == {
         "events": str(result.events_path),
         "patch": str(result.patch_path),
@@ -210,6 +215,7 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
     assert "tool_completed" in event_types
     assert {event["run_id"] for event in events} == {result.run.id}
     assert events[-1]["payload"]["status"] == "succeeded"
+    assert events[-1]["payload"]["runtime_result"] == result.runtime_result.to_dict()
 
 
 @pytest.mark.parametrize("status", ["draft", "rejected"])
@@ -265,6 +271,8 @@ def test_provider_failure_persists_failed_run_and_retains_workspace(tmp_path, mo
     assert metadata["status"] == "failed"
     assert metadata["result"]["error_type"] == "RuntimeError"
     assert metadata["result"]["error"] == "provider unavailable"
+    assert metadata["result"]["runtime_result"]["status"] == "failed"
+    assert metadata["result"]["runtime_result"]["scope"] == "run"
     assert metadata["result"]["artifacts"]["validation"] is None
     events_path = metadata_path.parent / "events.jsonl"
     assert failure.value.events_path == events_path
@@ -292,12 +300,78 @@ def test_keyboard_interrupt_persists_cancelled_run_and_retains_workspace(tmp_pat
     metadata_path, metadata = _only_run_metadata(tmp_path)
     assert metadata["status"] == "cancelled"
     assert metadata["result"]["error_type"] == "KeyboardInterrupt"
+    assert metadata["result"]["runtime_result"]["status"] == "cancelled"
     assert (metadata_path.parent / "workspace" / "app.py").is_file()
     assert (metadata_path.parent / "changes.patch").is_file()
     assert (metadata_path.parent / "report.md").is_file()
     events = _events(metadata_path.parent / "events.jsonl")
     assert "turn_interrupted" in [event["event_type"] for event in events]
     assert events[-1]["event_type"] == "run_finished"
+    assert events[-1]["payload"]["status"] == "cancelled"
+
+
+def test_managed_runtime_limit_skips_validation_and_persists_control_facts(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = _repository(tmp_path)
+    store, record = _stored_plan(tmp_path, repository)
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "write-1",
+            "write_file",
+            {"file_path": "app.py", "content": "VALUE = 'limited'\n"},
+        )]),
+        LLMResponse(content="must not be requested"),
+    ])
+
+    result = _service(tmp_path, store, provider).execute(
+        record.reference,
+        limits=RuntimeLimits(max_provider_calls=1),
+    )
+
+    assert result.run.status == "limit_reached"
+    assert result.validation is None
+    assert result.validation_path is None
+    assert result.runtime_result.scope is RuntimeResultScope.RUN
+    assert result.runtime_result.status is RuntimeResultStatus.LIMIT_REACHED
+    assert result.runtime_result.limit == "provider_calls"
+    assert result.runtime_result.actual == 1
+    assert result.runtime_result.maximum == 1
+    assert len(provider.requests) == 1
+    assert (result.workspace.path / "app.py").read_text(encoding="utf-8") == "VALUE = 'limited'\n"
+    assert (repository / "app.py").read_text(encoding="utf-8") == "VALUE = 'source'\n"
+    metadata = json.loads((result.workspace.path.parent / "run.json").read_text(encoding="utf-8"))
+    assert metadata["status"] == "limit_reached"
+    assert metadata["result"]["runtime_result"] == result.runtime_result.to_dict()
+    assert metadata["result"]["artifacts"]["validation"] is None
+    events = _events(result.events_path)
+    assert "turn_limit_reached" in [event["event_type"] for event in events]
+    assert "validation_started" not in [event["event_type"] for event in events]
+    run_started = next(event for event in events if event["event_type"] == "run_started")
+    assert run_started["payload"]["runtime_limits"] == {"max_provider_calls": 1}
+    assert events[-1]["payload"]["status"] == "limit_reached"
+
+
+def test_pre_cancelled_managed_runtime_skips_provider_and_validation(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = _repository(tmp_path)
+    store, record = _stored_plan(tmp_path, repository)
+    provider = FakeProvider([LLMResponse(content="must not run")])
+    token = CancellationToken()
+    token.cancel("cancel before managed provider")
+
+    result = _service(tmp_path, store, provider).execute(
+        record.reference,
+        cancellation_token=token,
+    )
+
+    assert result.run.status == "cancelled"
+    assert result.validation is None
+    assert result.runtime_result.status is RuntimeResultStatus.CANCELLED
+    assert result.runtime_result.reason == "cancel before managed provider"
+    assert provider.requests == []
+    events = _events(result.events_path)
+    assert "turn_interrupted" in [event["event_type"] for event in events]
+    assert "validation_started" not in [event["event_type"] for event in events]
     assert events[-1]["payload"]["status"] == "cancelled"
 
 
@@ -323,6 +397,8 @@ def test_run_cli_executes_approved_plan_with_the_shared_bootstrap(tmp_path, monk
         str(store.directory),
         "--runs-dir",
         str(tmp_path / "runs"),
+        "--max-provider-calls",
+        "3",
     ])
 
     assert exit_code == 0
@@ -334,6 +410,9 @@ def test_run_cli_executes_approved_plan_with_the_shared_bootstrap(tmp_path, monk
     assert "Events:" in output
     metadata_path, metadata = _only_run_metadata(tmp_path)
     assert metadata["status"] == "succeeded"
+    events = _events(metadata_path.parent / "events.jsonl")
+    run_started = next(event for event in events if event["event_type"] == "run_started")
+    assert run_started["payload"]["runtime_limits"] == {"max_provider_calls": 3}
     assert (metadata_path.parent / "workspace" / "app.py").read_text(encoding="utf-8") == "VALUE = 'from-cli'\n"
     assert (repository / "app.py").read_text(encoding="utf-8") == "VALUE = 'source'\n"
 
@@ -384,6 +463,9 @@ def test_validation_failure_marks_run_failed_and_preserves_all_command_results(t
     result = _service(tmp_path, store, provider).execute(record.reference)
 
     assert result.run.status == "failed"
+    assert result.runtime_result.status is RuntimeResultStatus.FAILED
+    assert result.runtime_result.error_type == "ValidationFailed"
+    assert result.runtime.last_result == result.runtime_result
     assert result.run.result["error_type"] == "ValidationFailed"
     assert result.validation.status == "failed"
     assert [command.status for command in result.validation.commands] == ["failed", "passed"]

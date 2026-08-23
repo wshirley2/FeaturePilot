@@ -3,11 +3,20 @@
 __version__ = "0.1.0"
 
 from .application import FeaturePilotApplication
-from .runtime_contracts import RuntimeMode, TaskRuntimeIdentity
+from .runtime_contracts import (
+    RuntimeMode,
+    RuntimeResultScope,
+    RuntimeResultStatus,
+    TaskRuntimeIdentity,
+    TaskRuntimeResult,
+)
 
 __all__ = [
     "FeaturePilotApplication",
     "RuntimeMode",
+    "RuntimeResultScope",
+    "RuntimeResultStatus",
     "TaskRuntimeIdentity",
+    "TaskRuntimeResult",
     "__version__",
 ]

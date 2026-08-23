@@ -36,3 +36,13 @@ def test_task_and_run_reject_unknown_states():
         assert "Unsupported run status" in str(error)
     else:
         raise AssertionError("Unknown run status should be rejected")
+
+
+def test_run_can_finish_when_a_runtime_limit_is_reached():
+    run = Run(task_id="task")
+
+    run.transition("running")
+    run.transition("limit_reached", result={"limit": "provider_calls"})
+
+    assert run.status == "limit_reached"
+    assert run.result == {"limit": "provider_calls"}

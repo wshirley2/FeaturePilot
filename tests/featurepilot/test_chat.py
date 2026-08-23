@@ -367,6 +367,7 @@ def test_chat_commands_and_eof_are_local_and_do_not_call_provider(monkeypatch, t
     assert "自动保存已开启" in rendered
     assert "FeaturePilot Sessions" in rendered
     assert "Session details" in rendered
+    assert "Last result: -" in rendered
     assert "Current model:" in rendered
     assert "Bye!" in rendered
     assert provider.requests == []

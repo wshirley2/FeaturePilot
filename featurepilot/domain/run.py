@@ -3,13 +3,14 @@
 from dataclasses import asdict, dataclass, field
 from uuid import uuid4
 
-RUN_STATUSES = {"created", "running", "succeeded", "failed", "cancelled"}
+RUN_STATUSES = {"created", "running", "succeeded", "failed", "cancelled", "limit_reached"}
 _RUN_TRANSITIONS = {
     "created": {"running"},
-    "running": {"succeeded", "failed", "cancelled"},
+    "running": {"succeeded", "failed", "cancelled", "limit_reached"},
     "succeeded": set(),
     "failed": set(),
     "cancelled": set(),
+    "limit_reached": set(),
 }
 
 

@@ -12,7 +12,7 @@ from corecoder.config import Config
 from corecoder.events import EventSink
 from corecoder.llm import LLM, LiteLLM
 from corecoder.permissions import DenyPermissionPrompt, PermissionManager, PermissionPrompt
-from corecoder.runtime_control import RuntimeLimits
+from corecoder.runtime_control import CancellationToken, RuntimeLimits
 from corecoder.tools import get_tool
 from corecoder.tools.base import Tool
 
@@ -20,7 +20,7 @@ from .chat_executor import RepositoryToolExecutor
 from .permissions import ChatPermissionPolicy
 from .repository import RepositoryProfiler
 from .repository.profiler import RepositoryProfile
-from .runtime_contracts import RuntimeMode, TaskRuntimeIdentity
+from .runtime_contracts import RuntimeMode, TaskRuntimeIdentity, TaskRuntimeResult
 from .sessions import SessionEventSink, SessionProjection, SessionStore
 
 ProviderFactory = Callable[[Config], object]
@@ -81,6 +81,32 @@ class TaskRuntime:
     def run_id(self) -> str | None:
         return self.identity.run_id
 
+    @property
+    def last_result(self) -> TaskRuntimeResult | None:
+        return self.session_sink.last_result if self.session_sink is not None else None
+
+    def record_result(self, result: TaskRuntimeResult) -> None:
+        """Record a complete Runtime result after orchestration-level work finishes."""
+
+        if self.session_sink is not None:
+            self.session_sink.record_result(self.identity.session_id, result)
+
+    def run_turn(
+        self,
+        user_input: str,
+        *,
+        cancellation_token: CancellationToken | None = None,
+    ) -> str:
+        """Run one controlled Agent turn through the shared Runtime boundary."""
+
+        return self.agent.chat(user_input, cancellation_token=cancellation_token)
+
+    def ensure_persisted(self) -> None:
+        """Require the latest Runtime and Session facts to be durable."""
+
+        if self.session_sink is not None:
+            self.session_sink.ensure_persisted()
+
     def set_model(self, model: str, *, record: bool = True) -> None:
         """Update both the provider configuration and model-visible runtime facts."""
 
@@ -118,6 +144,7 @@ class TaskRuntime:
             # reuses C3's Trusted Diff and fresh approval path.
             self.permission_manager.clear_session_grants()
         if self.session_sink is not None:
+            self.session_sink.last_result = projection.last_result
             self.session_sink.record("session_resumed", projection.session_id, {
                 "repository_root": str(self.repository),
                 "event_count": len(projection.events),

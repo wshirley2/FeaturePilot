@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from corecoder.events import EventSink
+from corecoder.runtime_control import CancellationToken, RuntimeLimits
 
 from .changes import ChangeArtifact, ChangeService, RepositorySnapshot
 from .domain import PlanRecord, Run
@@ -21,7 +22,12 @@ from .planning import PlanStore
 from .reporting import ReportService, RunMetrics, collect_run_metrics
 from .run_events import ManagedRunEventSink, RunEventLog
 from .runtime import RuntimeBootstrap, RuntimeBootstrapInput, TaskRuntime
-from .runtime_contracts import RuntimeMode
+from .runtime_contracts import (
+    RuntimeMode,
+    RuntimeResultScope,
+    RuntimeResultStatus,
+    TaskRuntimeResult,
+)
 from .workspace import Workspace, WorkspaceService
 
 
@@ -34,13 +40,14 @@ class ManagedRunResult:
     workspace: Workspace
     runtime: TaskRuntime
     response: str
-    validation: ValidationArtifact
-    validation_path: Path
+    validation: ValidationArtifact | None
+    validation_path: Path | None
     events_path: Path
     changes: ChangeArtifact
     patch_path: Path
     report_path: Path
     metrics: RunMetrics
+    runtime_result: TaskRuntimeResult
 
 
 class ManagedRunExecutionError(RuntimeError):
@@ -63,6 +70,10 @@ class ManagedRunExecutionError(RuntimeError):
         self.events_path = events_path
         self.patch_path = patch_path
         self.report_path = report_path
+
+
+class _ControlledStopArtifactError(RuntimeError):
+    """A cancelled or limited Run ended correctly but could not retain artifacts."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +113,8 @@ class ManagedRunService:
         model: str | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
+        limits: RuntimeLimits | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> ManagedRunResult:
         started = time.monotonic()
         record = self.plan_store.load(plan_reference)
@@ -129,6 +142,7 @@ class ManagedRunService:
         event_log.record("run_started", {
             "workspace": str(workspace.path),
             "permission_mode": "approved Plan scope in an isolated Workspace",
+            "runtime_limits": _runtime_limits_payload(limits),
         })
 
         runtime: TaskRuntime | None = None
@@ -150,9 +164,56 @@ class ManagedRunService:
                 task_id=record.plan.task_id,
                 run_id=run.id,
                 source_repository=workspace.source_path,
+                limits=limits,
             ))
-            response = runtime.agent.chat(_managed_task(record))
+            response = runtime.run_turn(
+                _managed_task(record),
+                cancellation_token=cancellation_token,
+            )
+            runtime.ensure_persisted()
             managed_sink.ensure_persisted()
+            if runtime.last_result is not None and runtime.last_result.status in {
+                RuntimeResultStatus.CANCELLED,
+                RuntimeResultStatus.LIMIT_REACHED,
+            }:
+                status = runtime.last_result.status.value
+                result_payload = _control_stop_payload(runtime.last_result, response)
+                artifacts = self._finalize_terminal_run(
+                    record=record,
+                    run=run,
+                    workspace=workspace,
+                    baseline=baseline,
+                    runtime=runtime,
+                    response=response,
+                    validation=None,
+                    validation_path=None,
+                    event_log=event_log,
+                    events_path=events_path,
+                    status=status,
+                    result_payload=result_payload,
+                    started=started,
+                )
+                _record_terminal_event(event_log, run.status, result_payload)
+                self.workspace_service.save_run(run)
+                if artifacts is None:
+                    raise _ControlledStopArtifactError(
+                        "Could not generate artifacts for the controlled Runtime stop"
+                    )
+                return ManagedRunResult(
+                    record=record,
+                    run=run,
+                    workspace=workspace,
+                    runtime=runtime,
+                    response=response,
+                    validation=None,
+                    validation_path=None,
+                    events_path=events_path,
+                    changes=artifacts.changes,
+                    patch_path=artifacts.patch_path,
+                    report_path=artifacts.report_path,
+                    metrics=artifacts.metrics,
+                    runtime_result=runtime.last_result,
+                )
             event_log.record("validation_started", {
                 "commands": [list(command) for command in record.plan.validation_commands],
             })
@@ -190,6 +251,14 @@ class ManagedRunService:
             _record_terminal_event(event_log, run.status, result_payload)
             self.workspace_service.save_run(run)
             raise
+        except _ControlledStopArtifactError as error:
+            self.workspace_service.save_run(run)
+            raise ManagedRunExecutionError(
+                run,
+                workspace,
+                error,
+                events_path=events_path,
+            ) from error
         except Exception as error:
             result_payload = {
                 "response": response,
@@ -261,6 +330,12 @@ class ManagedRunService:
                 "error_type": "ArtifactGenerationError",
                 "error": str(error),
             }
+            _attach_runtime_result(
+                runtime,
+                status="failed",
+                response=response,
+                result=failure_result,
+            )
             run.transition("failed", result=failure_result)
             _record_terminal_event(event_log, run.status, failure_result)
             self.workspace_service.save_run(run)
@@ -272,6 +347,12 @@ class ManagedRunService:
             ) from error
 
         try:
+            runtime_result = _attach_runtime_result(
+                runtime,
+                status=final_status,
+                response=response,
+                result=result_payload,
+            )
             event_log.record("run_finished", _terminal_event_payload(final_status, result_payload))
         except Exception as error:
             failure_result = {
@@ -279,6 +360,12 @@ class ManagedRunService:
                 "error_type": "EventLogError",
                 "error": str(error),
             }
+            _attach_runtime_result(
+                runtime,
+                status="failed",
+                response=response,
+                result=failure_result,
+            )
             run.transition("failed", result=failure_result)
             self.workspace_service.save_run(run)
             raise ManagedRunExecutionError(
@@ -304,6 +391,7 @@ class ManagedRunService:
             patch_path=artifacts.patch_path,
             report_path=artifacts.report_path,
             metrics=artifacts.metrics,
+            runtime_result=runtime_result,
         )
 
     def _finalize_terminal_run(
@@ -345,6 +433,12 @@ class ManagedRunService:
                 "error": str(artifact_error),
             }
             artifacts = None
+        _attach_runtime_result(
+            runtime,
+            status=status,
+            response=response,
+            result=result_payload,
+        )
         run.transition(status, result=result_payload)
         return artifacts
 
@@ -425,10 +519,100 @@ def _record_terminal_event(
 
 def _terminal_event_payload(status: str, result: dict[str, object]) -> dict[str, object]:
     payload: dict[str, object] = {"status": status}
-    for key in ("error_type", "error", "validation", "artifacts"):
+    for key in ("error_type", "error", "validation", "artifacts", "runtime_result"):
         if key in result:
             payload[key] = result[key]
     return payload
+
+
+def _control_stop_payload(
+    turn_result: TaskRuntimeResult,
+    response: str,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "response": response,
+        "error_type": (
+            "RuntimeLimitExceeded"
+            if turn_result.status is RuntimeResultStatus.LIMIT_REACHED
+            else "RuntimeCancelled"
+        ),
+        "error": turn_result.reason or turn_result.status.value,
+    }
+    if turn_result.status is RuntimeResultStatus.LIMIT_REACHED:
+        payload.update({
+            "limit": turn_result.limit,
+            "actual": turn_result.actual,
+            "maximum": turn_result.maximum,
+        })
+    return payload
+
+
+def _runtime_limits_payload(limits: RuntimeLimits | None) -> dict[str, int | float]:
+    if limits is None:
+        return {}
+    names = (
+        "max_provider_calls",
+        "max_tool_rounds",
+        "max_turn_seconds",
+        "max_input_tokens",
+        "max_total_tokens",
+        "max_cost_usd",
+    )
+    return {
+        name: value
+        for name in names
+        if (value := getattr(limits, name)) is not None
+    }
+
+
+def _attach_runtime_result(
+    runtime: TaskRuntime | None,
+    *,
+    status: str,
+    response: str,
+    result: dict[str, object],
+) -> TaskRuntimeResult:
+    if status == "succeeded":
+        runtime_result = TaskRuntimeResult(
+            scope=RuntimeResultScope.RUN,
+            status=RuntimeResultStatus.SUCCEEDED,
+            response=response,
+        )
+    elif status == "cancelled":
+        runtime_result = TaskRuntimeResult(
+            scope=RuntimeResultScope.RUN,
+            status=RuntimeResultStatus.CANCELLED,
+            response=response,
+            reason=str(result.get("error") or "Managed Run cancelled"),
+        )
+    elif status == "limit_reached":
+        actual = result.get("actual")
+        maximum = result.get("maximum")
+        runtime_result = TaskRuntimeResult(
+            scope=RuntimeResultScope.RUN,
+            status=RuntimeResultStatus.LIMIT_REACHED,
+            response=response,
+            reason=str(result.get("error") or "Managed Run limit reached"),
+            limit=str(result.get("limit") or "unknown"),
+            actual=actual if isinstance(actual, (int, float)) and not isinstance(actual, bool) else None,
+            maximum=(
+                maximum
+                if isinstance(maximum, (int, float)) and not isinstance(maximum, bool)
+                else None
+            ),
+        )
+    else:
+        runtime_result = TaskRuntimeResult(
+            scope=RuntimeResultScope.RUN,
+            status=RuntimeResultStatus.FAILED,
+            response=response,
+            reason=str(result.get("error") or "Managed Run failed"),
+            error_type=str(result.get("error_type") or "ManagedRunError"),
+        )
+    result["runtime_result"] = runtime_result.to_dict()
+    if runtime is not None:
+        runtime.record_result(runtime_result)
+    return runtime_result
 
 
 def _managed_system_context(record: PlanRecord) -> str:

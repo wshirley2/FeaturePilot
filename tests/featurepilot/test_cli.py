@@ -162,11 +162,14 @@ def test_plan_chat_command_builds_the_conversational_session(tmp_path, monkeypat
         str(tmp_path / "plans"),
         "--runs-dir",
         str(tmp_path / "runs"),
+        "--max-provider-calls",
+        "3",
     ])
 
     assert result == 7
     assert captured["repository"] == repository
     assert isinstance(captured["kwargs"]["planning_service"], PlanningService)
+    assert captured["kwargs"]["limits"].max_provider_calls == 3
 
 
 def test_default_chat_entry_injects_the_embedded_plan_session(tmp_path, monkeypatch):
@@ -197,11 +200,14 @@ def test_default_chat_entry_injects_the_embedded_plan_session(tmp_path, monkeypa
         str(tmp_path / "plans"),
         "--runs-dir",
         str(tmp_path / "runs"),
+        "--max-tool-rounds",
+        "4",
     ])
 
     assert result == 9
     assert captured["runtime"].repository == repository.resolve()
     assert captured["plan_session"] is not None
+    assert captured["plan_session"].limits.max_tool_rounds == 4
 
 
 def test_sessions_commands_list_and_show_event_sessions(tmp_path, capsys):

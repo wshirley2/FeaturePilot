@@ -188,7 +188,7 @@ class ChatSession:
                 continue
 
             try:
-                response = self.runtime.agent.chat(user_input)
+                response = self.runtime.run_turn(user_input)
                 # Providers used by embedders may not stream token callbacks.
                 sink = self.runtime.agent.event_sink
                 if not getattr(sink, "last_turn_streamed", False) and response:
@@ -458,6 +458,12 @@ class ChatSession:
                 f"Run: {item.run_id or '-'}",
                 f"Model: {item.model or '?'}",
                 f"Status: {item.status}",
+                (
+                    f"Last result: {item.last_result.status.value} "
+                    f"({item.last_result.scope.value})"
+                    if item.last_result is not None
+                    else "Last result: -"
+                ),
                 f"Events: {len(item.events)}",
                 f"Messages: {len(item.messages)} (model projection: {len(item.model_messages)})",
                 f"Usage: {item.prompt_tokens} prompt + {item.completion_tokens} completion",
@@ -499,8 +505,7 @@ class ChatSession:
         self.console.print(f"Tool detail mode: [cyan]{state}[/cyan]")
 
     def _ensure_session_persisted(self) -> None:
-        sink = getattr(self.runtime.agent, "event_sink", None)
-        ensure = getattr(sink, "ensure_persisted", None)
+        ensure = getattr(self.runtime, "ensure_persisted", None)
         if ensure is None:
             return
         try:
@@ -543,6 +548,8 @@ class ChatSession:
         result = self.plan_session.last_result
         if result is None:
             return
+        validation_status = result.validation.status if result.validation is not None else "not_started"
+        validation_path = str(result.validation_path) if result.validation_path is not None else "-"
         self.runtime.agent.messages.append({
             "role": "system",
             "content": "\n".join([
@@ -550,8 +557,8 @@ class ChatSession:
                 f"Run: {result.run.id}",
                 f"Status: {result.run.status}",
                 f"Workspace: {result.workspace.path}",
-                f"Validation: {result.validation.status}",
-                f"Validation artifact: {result.validation_path}",
+                f"Validation: {validation_status}",
+                f"Validation artifact: {validation_path}",
                 f"Events: {result.events_path}",
                 f"Patch: {result.patch_path}",
                 f"Report: {result.report_path}",
