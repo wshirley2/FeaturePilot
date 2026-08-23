@@ -16,6 +16,7 @@ from featurepilot.execution import ValidationCommandRunner, ValidationService, W
 from featurepilot.managed import ManagedRunExecutionError, ManagedRunService
 from featurepilot.planning import PlanStore
 from featurepilot.runtime import RuntimeBootstrap
+from featurepilot.runtime_contracts import RuntimeMode
 from featurepilot.workspace import CopyWorkspaceBackend, WorkspaceService
 
 
@@ -133,6 +134,17 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
     assert result.events_path == result.workspace.path.parent / "events.jsonl"
     assert isinstance(result.runtime.agent.tool_executor, WorkspaceToolExecutor)
     assert result.runtime.repository == result.workspace.path.resolve()
+    assert result.runtime.runtime_mode is RuntimeMode.MANAGED_RUN
+    assert result.runtime.task_id == record.plan.task_id
+    assert result.runtime.run_id == result.run.id
+    assert result.runtime.identity.source_repository == repository.resolve()
+    assert result.runtime.identity.workspace_path == result.workspace.path.resolve()
+    assert "Mode: Managed Run" in result.runtime.agent._system
+    session = result.runtime.session_store.replay(result.runtime.agent.session_id)
+    assert session.mode == "managed_run"
+    assert session.task_id == record.plan.task_id
+    assert session.run_id == result.run.id
+    assert session.source_repository_root == repository.resolve()
     assert (result.workspace.path / "app.py").read_text(encoding="utf-8") == "VALUE = 'managed'\n"
     assert (repository / "app.py").read_text(encoding="utf-8") == "VALUE = 'source'\n"
     metadata = json.loads((result.workspace.path.parent / "run.json").read_text(encoding="utf-8"))

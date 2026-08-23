@@ -20,7 +20,8 @@ from .execution import (
 from .planning import PlanStore
 from .reporting import ReportService, RunMetrics, collect_run_metrics
 from .run_events import ManagedRunEventSink, RunEventLog
-from .runtime import ChatRuntime, RuntimeBootstrap, RuntimeBootstrapInput
+from .runtime import RuntimeBootstrap, RuntimeBootstrapInput, TaskRuntime
+from .runtime_contracts import RuntimeMode
 from .workspace import Workspace, WorkspaceService
 
 
@@ -31,7 +32,7 @@ class ManagedRunResult:
     record: PlanRecord
     run: Run
     workspace: Workspace
-    runtime: ChatRuntime
+    runtime: TaskRuntime
     response: str
     validation: ValidationArtifact
     validation_path: Path
@@ -130,7 +131,7 @@ class ManagedRunService:
             "permission_mode": "approved Plan scope in an isolated Workspace",
         })
 
-        runtime: ChatRuntime | None = None
+        runtime: TaskRuntime | None = None
         response = ""
         validation: ValidationArtifact | None = None
         validation_path: Path | None = None
@@ -145,6 +146,10 @@ class ManagedRunService:
                 tools=build_featurepilot_tools(),
                 system_context=_managed_system_context(record),
                 permission_mode="approved Plan scope in an isolated Workspace",
+                mode=RuntimeMode.MANAGED_RUN,
+                task_id=record.plan.task_id,
+                run_id=run.id,
+                source_repository=workspace.source_path,
             ))
             response = runtime.agent.chat(_managed_task(record))
             managed_sink.ensure_persisted()
@@ -308,7 +313,7 @@ class ManagedRunService:
         run: Run,
         workspace: Workspace,
         baseline: RepositorySnapshot,
-        runtime: ChatRuntime | None,
+        runtime: TaskRuntime | None,
         response: str,
         validation: ValidationArtifact | None,
         validation_path: Path | None,
@@ -350,7 +355,7 @@ class ManagedRunService:
         run: Run,
         workspace: Workspace,
         baseline: RepositorySnapshot,
-        runtime: ChatRuntime | None,
+        runtime: TaskRuntime | None,
         response: str,
         validation: ValidationArtifact | None,
         validation_path: Path | None,

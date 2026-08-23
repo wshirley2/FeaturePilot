@@ -8,7 +8,7 @@ from pathlib import Path
 from .changes import ChangeArtifact
 from .domain import PlanRecord, Run
 from .execution import ValidationArtifact
-from .runtime import ChatRuntime
+from .runtime import TaskRuntime
 from .workspace import Workspace
 
 
@@ -69,7 +69,7 @@ class ReportService:
         return report_path
 
 
-def collect_run_metrics(runtime: ChatRuntime | None, duration_seconds: float) -> RunMetrics:
+def collect_run_metrics(runtime: TaskRuntime | None, duration_seconds: float) -> RunMetrics:
     provider = runtime.agent.llm if runtime is not None else None
     prompt_tokens = int(getattr(provider, "total_prompt_tokens", 0) or 0)
     completion_tokens = int(getattr(provider, "total_completion_tokens", 0) or 0)

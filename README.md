@@ -17,8 +17,9 @@ FeaturePilot 把“理解任务到交付变更”放在同一个 Task Runtime �
 | 隔离 Workspace 中的 Managed Run | 已实现 |
 | Validation、Patch、Report、单次 Run 事件产物 | 已实现 |
 | 跨回合 Session 保存、恢复、取消与预算 | 已实现（C4） |
+| Chat/Managed Run 统一 Runtime 身份契约 | 第一切片已实现 |
 
-当前自动化基线：`203 passed, 1 skipped`。另有一套 C4 前 E2-lite 基测为 `4/4 passed`。跳过项是 Windows 当前环境缺少创建符号链接的权限，不代表功能失败。
+当前自动化基线：`209 passed, 1 skipped`。另有一套 C4 前 E2-lite 基测为 `4/4 passed`。跳过项是 Windows 当前环境缺少创建符号链接的权限，不代表功能失败。
 
 ## 同一 Task Runtime 的两条路径
 
@@ -278,44 +279,44 @@ Chat 内可用 `/help` 查看命令；常用的有 `/status`、`/save`、`/sessi
 
 ```powershell
 python -m pytest -q -p no:cacheprovider --basetemp='.tmp\pytest-readme'
-python -m ruff check .
+python -m ruff check --no-cache .
 ```
 
-## 基于 CoreCoder 的二次开发
+## 技术演进与项目边界
 
-FeaturePilot 基于 [Yufeng He 的 CoreCoder](https://github.com/he-yufeng/CoreCoder) Fork 并持续演进。
-CoreCoder 是一个面向学习和二次开发的最小 AI Coding Agent；FeaturePilot 在其 Agent、模型适配、基础工具和上下文能力之上，新增了面向仓库开发任务的产品层。
+FeaturePilot 从一个最小 AgentLoop 原型持续演进为面向本地代码仓库的 Coding Agent。
+当前项目的重点是 FeaturePilot 自身的 Runtime、权限、Session、Plan 和 CLI 产品能力，以及这些能力之间的完整协作闭环。
 
-| CoreCoder 的基础 | FeaturePilot 的新增方向 |
+| 基础 Agent 能力 | FeaturePilot 当前实现 |
 |---|---|
-| 最小 AgentLoop、Provider、基础工具 | `RuntimeBootstrap` 统一装配 Chat 与 Managed Run |
-| 自由终端 Agent | 仓库画像、入口/测试发现与仓库边界 |
-| 基础文件修改与命令执行 | `ALLOW / ASK / DENY` 权限策略与终端确认 |
-| 工具自身返回 Diff | 写入前 Trusted Diff、文件快照复核与重新确认 |
+| AgentLoop、Provider 和基础工具 | `RuntimeBootstrap` 返回统一 `TaskRuntime`，旧 `ChatRuntime` 名称作为兼容别名 |
+| 基础仓库交互 | 仓库画像、入口/测试发现与仓库边界 |
+| 文件修改与命令执行 | `ALLOW / ASK / DENY` 权限策略与终端确认 |
+| 工具调用结果 | 写入前 Trusted Diff、文件快照复核与重新确认 |
 | 通用对话执行 | Plan、明确批准、隔离 Workspace 与 Managed Run |
-| 基础运行过程 | `validation.json`、`changes.patch`、`report.md`、`events.jsonl` |
+| 运行事件 | Session、Validation、Patch、Report 和可审查事件记录 |
 
-本项目保留上游的 [MIT License](LICENSE)。根据 MIT 许可要求，原版权声明与许可文本必须随代码保留；FeaturePilot 也在此基础上明确记录新增设计与后续演进。
+早期基础代码来源于 [CoreCoder](https://github.com/he-yufeng/CoreCoder)；原版权声明和 MIT 许可证保留在 [LICENSE](LICENSE) 中。
 
 ## 当前限制与路线
 
-- C4 的跨回合 Session 保存、恢复、取消和预算控制已完成；下一步是统一 Task Runtime 契约与目录结构；
+- C4 的跨回合 Session 保存、恢复、取消和预算控制已完成；统一 Task Runtime 身份契约第一切片也已完成，下一步是统一终止状态/结果契约并继续目录收敛；
 - `events.jsonl` 当前记录单次 Managed Run，不等同于可恢复的 Chat Session；
 - Bash 有路径策略与危险命令拦截，但不是容器或系统级沙箱；
 - 工具调用依赖模型服务正确返回标准 Tool Calling；部分本地模型可能只输出看似工具调用的普通文本；
+- C4 已限制发送给模型的上下文，但当前 Session 重放仍会构建完整 Events/Messages；超长会话的按需加载、Snapshot 和 Artifact Store 记录在 OPT-013；
 - 过程提示的节奏收敛、限制拦截结果的终端降噪仍在产品优化项中持续评估；
 - 当前重点是本地 CLI 工作流，不提供 Web、多用户协作或 MCP 平台能力。
 
 ## 路线图
 
 ```text
-已完成：Chat、Plan、Managed Run、Validation、Patch、Report、权限确认、Trusted Diff、C4 Session/取消/预算
-当前：C4 后统一 Task Runtime 与目录结构
+已完成：Chat、Plan、Managed Run、Validation、Patch、Report、权限确认、Trusted Diff、C4 Session/取消/预算、统一 Runtime 身份第一切片
+当前：统一 Task Runtime 终止状态/结果契约与目录收敛
 后续：C5 副作用感知并发、M2 Managed Run 增强、评测与公开 Demo 包装
 ```
 
-## 致谢与许可
+## 技术来源与许可
 
-- 上游项目：[he-yufeng/CoreCoder](https://github.com/he-yufeng/CoreCoder)
-- 原作者：[Yufeng He](https://github.com/he-yufeng)
+- 早期技术基础：[CoreCoder](https://github.com/he-yufeng/CoreCoder)
 - 许可证：[MIT](LICENSE)

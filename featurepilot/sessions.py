@@ -92,6 +92,8 @@ class SessionProjection:
     mode: str = "chat"
     status: str = "active"
     task_id: str | None = None
+    run_id: str | None = None
+    source_repository_root: Path | None = None
     messages: list[dict[str, Any]] = field(default_factory=list)
     model_messages: list[dict[str, Any]] = field(default_factory=list)
     events: list[SessionEvent] = field(default_factory=list)
@@ -125,6 +127,8 @@ class SessionStore:
         model: str,
         mode: str = "chat",
         task_id: str | None = None,
+        run_id: str | None = None,
+        source_repository_root: Path | None = None,
     ) -> SessionProjection:
         safe_id = self._normalize_session_id(session_id)
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -140,6 +144,8 @@ class SessionStore:
                     "model": model,
                     "mode": mode,
                     "task_id": task_id,
+                    "run_id": run_id,
+                    "source_repository_root": str((source_repository_root or repository_root).resolve()),
                 },
             )
         )
@@ -190,6 +196,13 @@ class SessionStore:
                 projection.model = payload.get("model") if isinstance(payload.get("model"), str) else None
                 projection.mode = payload.get("mode") if isinstance(payload.get("mode"), str) else "chat"
                 projection.task_id = payload.get("task_id") if isinstance(payload.get("task_id"), str) else None
+                projection.run_id = payload.get("run_id") if isinstance(payload.get("run_id"), str) else None
+                source_root = payload.get("source_repository_root")
+                projection.source_repository_root = (
+                    Path(source_root).resolve()
+                    if isinstance(source_root, str)
+                    else projection.repository_root
+                )
             elif event.event_type == "session_resumed":
                 projection.status = "active"
             elif event.event_type == "session_model_changed":

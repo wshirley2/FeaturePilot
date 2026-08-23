@@ -89,6 +89,30 @@ def test_session_keeps_raw_facts_when_context_projection_is_compressed(tmp_path)
     assert projection.model_messages == [{"role": "user", "content": "[summary] first"}]
 
 
+def test_session_replay_preserves_unified_runtime_identity(tmp_path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    source.mkdir()
+    workspace.mkdir()
+    store = SessionStore(tmp_path / "sessions")
+
+    projection = store.create(
+        "managed-session",
+        repository_root=workspace,
+        source_repository_root=source,
+        model="fake-model",
+        mode="managed_run",
+        task_id="task-1",
+        run_id="run-1",
+    )
+
+    assert projection.repository_root == workspace.resolve()
+    assert projection.source_repository_root == source.resolve()
+    assert projection.mode == "managed_run"
+    assert projection.task_id == "task-1"
+    assert projection.run_id == "run-1"
+
+
 def test_session_sink_persists_agent_events_and_limits_leave_recoverable_boundary(tmp_path):
     store = SessionStore(tmp_path / "sessions")
     store.create("session-3", repository_root=tmp_path, model="fake-model")

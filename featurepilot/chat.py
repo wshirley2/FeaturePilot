@@ -19,7 +19,7 @@ from corecoder.context import estimate_tokens
 from corecoder.events import RuntimeEvent, RuntimeEventType
 from corecoder.tools.edit import _changed_files
 
-from .runtime import ChatRuntime
+from .runtime import TaskRuntime
 
 if TYPE_CHECKING:
     from .plan_chat import PlanChatSession
@@ -133,7 +133,7 @@ class ChatSession:
 
     def __init__(
         self,
-        runtime: ChatRuntime,
+        runtime: TaskRuntime,
         *,
         console: Console | None = None,
         input_fn: InputFunction | None = None,
@@ -452,6 +452,10 @@ class ChatSession:
             "\n".join([
                 f"Session: {item.session_id}",
                 f"Repository: {item.repository_root or '?'}",
+                f"Source repository: {item.source_repository_root or '?'}",
+                f"Mode: {item.mode}",
+                f"Task: {item.task_id or '-'}",
+                f"Run: {item.run_id or '-'}",
                 f"Model: {item.model or '?'}",
                 f"Status: {item.status}",
                 f"Events: {len(item.events)}",

@@ -20,6 +20,7 @@ from .chat_executor import RepositoryToolExecutor
 from .permissions import ChatPermissionPolicy
 from .repository import RepositoryProfiler
 from .repository.profiler import RepositoryProfile
+from .runtime_contracts import RuntimeMode, TaskRuntimeIdentity
 from .sessions import SessionEventSink, SessionProjection, SessionStore
 
 ProviderFactory = Callable[[Config], object]
@@ -41,10 +42,15 @@ class RuntimeBootstrapInput:
     session_directory: Path | None = None
     resume_session_id: str | None = None
     limits: RuntimeLimits | None = None
+    mode: RuntimeMode = RuntimeMode.CHAT
+    task_id: str | None = None
+    run_id: str | None = None
+    source_repository: Path | None = None
 
 
 @dataclass
-class ChatRuntime:
+class TaskRuntime:
+    identity: TaskRuntimeIdentity
     repository: Path
     config: Config
     agent: Agent
@@ -56,7 +62,24 @@ class ChatRuntime:
     session_store: SessionStore | None = None
     session_sink: SessionEventSink | None = None
     base_system_context: str = ""
-    mode: str = "Chat"
+
+    @property
+    def runtime_mode(self) -> RuntimeMode:
+        return self.identity.mode
+
+    @property
+    def mode(self) -> str:
+        """Compatibility display label retained for existing CLI integrations."""
+
+        return self.identity.mode.display_name
+
+    @property
+    def task_id(self) -> str | None:
+        return self.identity.task_id
+
+    @property
+    def run_id(self) -> str | None:
+        return self.identity.run_id
 
     def set_model(self, model: str, *, record: bool = True) -> None:
         """Update both the provider configuration and model-visible runtime facts."""
@@ -76,8 +99,18 @@ class ChatRuntime:
         projection = self.session_store.replay(session_id)
         if projection.repository_root is not None and projection.repository_root != self.repository:
             raise ValueError("Session belongs to a different repository")
+        if projection.mode != self.identity.mode.value:
+            raise ValueError("Session belongs to a different Runtime mode")
         self.agent.session_id = projection.session_id
         self.agent.messages = projection.model_messages
+        self.identity = TaskRuntimeIdentity(
+            mode=self.identity.mode,
+            session_id=projection.session_id,
+            task_id=projection.task_id,
+            run_id=projection.run_id,
+            source_repository=(projection.source_repository_root or self.identity.source_repository),
+            working_directory=self.repository,
+        )
         if projection.model:
             self.set_model(projection.model, record=False)
         if self.permission_manager is not None:
@@ -93,6 +126,10 @@ class ChatRuntime:
         return projection
 
 
+# Compatibility alias for integrations written before the unified Task Runtime contract.
+ChatRuntime = TaskRuntime
+
+
 class RuntimeBootstrap:
     """Build the complete runtime once so CLI commands do not duplicate it."""
 
@@ -105,10 +142,15 @@ class RuntimeBootstrap:
         self.provider_factory = provider_factory
         self.profiler = profiler or RepositoryProfiler()
 
-    def build(self, inputs: RuntimeBootstrapInput) -> ChatRuntime:
+    def build(self, inputs: RuntimeBootstrapInput) -> TaskRuntime:
         repository = inputs.repository.resolve()
         if not repository.is_dir():
             raise ValueError(f"Repository directory does not exist: {inputs.repository}")
+        mode = RuntimeMode(inputs.mode)
+        source_repository = (inputs.source_repository or repository).resolve()
+        if not source_repository.is_dir():
+            raise ValueError(f"Source repository directory does not exist: {source_repository}")
+        _validate_runtime_scope(mode, inputs.task_id, inputs.run_id)
 
         config = Config.from_env()
         if inputs.model:
@@ -145,6 +187,8 @@ class RuntimeBootstrap:
             resume_projection = session_store.replay(inputs.resume_session_id)
             if resume_projection.repository_root is not None and resume_projection.repository_root != repository:
                 raise ValueError("Session belongs to a different repository")
+            if resume_projection.mode != mode.value:
+                raise ValueError("Session belongs to a different Runtime mode")
             if resume_projection.model and not inputs.model:
                 config.model = resume_projection.model
 
@@ -153,7 +197,7 @@ class RuntimeBootstrap:
         base_system_context = "\n\n".join(
             part for part in (repository_context, inputs.system_context) if part
         )
-        system_context = _with_runtime_identity(base_system_context, "Chat", config.model)
+        system_context = _with_runtime_identity(base_system_context, mode.display_name, config.model)
         permission_manager = None
         tool_executor = inputs.tool_executor
         if tool_executor is None:
@@ -183,9 +227,20 @@ class RuntimeBootstrap:
                 agent.session_id,
                 repository_root=repository,
                 model=config.model,
-                mode="chat",
+                mode=mode.value,
+                task_id=inputs.task_id,
+                run_id=inputs.run_id,
+                source_repository_root=source_repository,
             )
-        runtime = ChatRuntime(
+        runtime = TaskRuntime(
+            identity=TaskRuntimeIdentity(
+                mode=mode,
+                session_id=agent.session_id,
+                task_id=inputs.task_id,
+                run_id=inputs.run_id,
+                source_repository=source_repository,
+                working_directory=repository,
+            ),
             repository=repository,
             config=config,
             agent=agent,
@@ -249,3 +304,12 @@ def _with_runtime_identity(base_context: str, mode: str, model: str) -> str:
         "Do not reveal API keys, endpoints, or other provider secrets.",
     ])
     return "\n\n".join(part for part in (base_context, identity) if part)
+
+
+def _validate_runtime_scope(mode: RuntimeMode, task_id: str | None, run_id: str | None) -> None:
+    """Reject incomplete correlation data before creating Session artifacts."""
+
+    if run_id is not None and task_id is None:
+        raise ValueError("A Runtime run id requires a task id")
+    if mode is RuntimeMode.MANAGED_RUN and (task_id is None or run_id is None):
+        raise ValueError("Managed Run Runtime requires task and run ids")

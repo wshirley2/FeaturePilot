@@ -18,9 +18,21 @@ from corecoder.permissions import PermissionDecision
 from featurepilot.chat import ChatSession, SlashCommandCompleter, TerminalEventSink
 from featurepilot.chat_executor import RepositoryToolExecutor
 from featurepilot.cli import _normalize_command
-from featurepilot.runtime import RuntimeBootstrap, RuntimeBootstrapInput
+from featurepilot.path_policy import ignored_child_names
+from featurepilot.runtime import ChatRuntime, RuntimeBootstrap, RuntimeBootstrapInput, TaskRuntime
+from featurepilot.runtime_contracts import RuntimeMode
 
 BENCHMARK_ROOT = Path(__file__).parents[2] / "benchmarks" / "cli_data_tool"
+
+
+def copy_benchmark(destination: Path) -> Path:
+    """Copy only source-controlled benchmark inputs, not local runtime artifacts."""
+
+    return Path(shutil.copytree(
+        BENCHMARK_ROOT,
+        destination,
+        ignore=lambda _directory, names: ignored_child_names(names),
+    ))
 
 
 def test_slash_command_completer_lists_and_filters_local_commands():
@@ -130,6 +142,12 @@ def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(mo
     runtime = make_runtime(BENCHMARK_ROOT, provider, console)
 
     assert runtime.repository == BENCHMARK_ROOT.resolve()
+    assert isinstance(runtime, TaskRuntime)
+    assert ChatRuntime is TaskRuntime
+    assert runtime.runtime_mode is RuntimeMode.CHAT
+    assert runtime.identity.source_repository == BENCHMARK_ROOT.resolve()
+    assert runtime.identity.working_directory == BENCHMARK_ROOT.resolve()
+    assert runtime.identity.workspace_path is None
     assert runtime.profile is not None
     assert runtime.profile.language == "python"
     assert "src/cli_data_tool/cli.py" in runtime.profile.entrypoints
@@ -200,8 +218,7 @@ def test_default_cli_spelling_enters_chat_for_current_or_explicit_repository():
 
 def test_chat_read_only_inspects_benchmark_without_modifying_files(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
-    repository = tmp_path / "cli_data_tool"
-    shutil.copytree(BENCHMARK_ROOT, repository)
+    repository = copy_benchmark(tmp_path / "cli_data_tool")
     read_path = "README.md"
     original = (repository / read_path).read_bytes()
     provider = FakeProvider([
@@ -222,8 +239,7 @@ def test_chat_read_only_inspects_benchmark_without_modifying_files(tmp_path, mon
 
 def test_chat_end_to_end_reads_edits_validates_and_continues_without_network(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
-    repository = tmp_path / "cli_data_tool"
-    shutil.copytree(BENCHMARK_ROOT, repository)
+    repository = copy_benchmark(tmp_path / "cli_data_tool")
     read_path = "src/cli_data_tool/exporter.py"
     original = (repository / read_path).read_text(encoding="utf-8")
     old = 'return "\\n".join(items)'

@@ -339,8 +339,13 @@ def _run_sessions(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     payload = {
         "session_id": item.session_id,
         "repository_root": str(item.repository_root) if item.repository_root else None,
+        "source_repository_root": (
+            str(item.source_repository_root) if item.source_repository_root else None
+        ),
         "model": item.model,
         "mode": item.mode,
+        "task_id": item.task_id,
+        "run_id": item.run_id,
         "status": item.status,
         "event_count": len(item.events),
         "message_count": len(item.messages),
