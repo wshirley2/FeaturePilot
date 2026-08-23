@@ -40,6 +40,24 @@ def _event(event_type, session_id="session-1", **kwargs):
     return RuntimeEvent(event_type=event_type, session_id=session_id, turn_id="turn-1", round_index=1, **kwargs)
 
 
+def test_session_sink_persistence_check_reaches_the_downstream_event_log(tmp_path):
+    class DurableDownstream:
+        checked = False
+
+        def emit(self, event):
+            pass
+
+        def ensure_persisted(self):
+            self.checked = True
+
+    downstream = DurableDownstream()
+    sink = SessionEventSink(SessionStore(tmp_path / "sessions"), downstream)
+
+    sink.ensure_persisted()
+
+    assert downstream.checked
+
+
 def test_session_replay_rebuilds_valid_tool_history_and_ignores_partial_tail(tmp_path):
     store = SessionStore(tmp_path / "sessions")
     store.create("session-1", repository_root=tmp_path, model="fake-model")

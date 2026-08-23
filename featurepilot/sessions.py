@@ -312,6 +312,11 @@ class SessionStore:
             raise ValueError("Invalid Session id")
         return path
 
+    def path_for(self, session_id: str) -> Path:
+        """Return the canonical event path for one normalized Session id."""
+
+        return self._path_for(session_id)
+
     @staticmethod
     def _normalize_session_id(session_id: str) -> str:
         name = session_id.strip().replace("\\", "/").split("/")[-1]
@@ -362,6 +367,9 @@ class SessionEventSink:
     def ensure_persisted(self) -> None:
         if self.persistence_error is not None:
             raise SessionStoreError("Session persistence failed; the latest turn may not be recoverable") from self.persistence_error
+        ensure_downstream = getattr(self.downstream, "ensure_persisted", None)
+        if callable(ensure_downstream):
+            ensure_downstream()
 
 
 def _as_non_negative_int(value: object) -> int:

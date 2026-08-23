@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -143,6 +145,10 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
     assert result.runtime.run_id == result.run.id
     assert result.runtime.identity.source_repository == repository.resolve()
     assert result.runtime.identity.workspace_path == result.workspace.path.resolve()
+    assert result.runtime.paths.run_directory == result.workspace.path.parent.resolve()
+    assert result.runtime.session_path is not None
+    assert result.runtime.session_path.parent == result.workspace.path.parent.resolve() / "sessions"
+    assert not (result.workspace.path / ".featurepilot").exists()
     assert "Mode: Managed Run" in result.runtime.agent._system
     session = result.runtime.session_store.replay(result.runtime.agent.session_id)
     assert session.mode == "managed_run"
@@ -156,6 +162,7 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
     assert metadata["result"]["runtime_result"] == result.runtime_result.to_dict()
     assert metadata["result"]["artifacts"] == {
         "events": str(result.events_path),
+        "session": str(result.runtime.session_path),
         "patch": str(result.patch_path),
         "validation": str(result.validation_path),
         "report": str(result.report_path),
@@ -186,6 +193,7 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
         "events.jsonl",
         "report.md",
         "run.json",
+        "sessions",
         "validation.json",
         "workspace",
     }
@@ -202,6 +210,7 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
     assert "Completion tokens: 30" in report
     assert "$0.012500 USD" in report
     assert f"Events: `{result.events_path}`" in report
+    assert f"Session: `{result.runtime.session_path}`" in report
     events = _events(result.events_path)
     event_types = [event["event_type"] for event in events]
     assert event_types[:2] == ["run_created", "run_started"]
@@ -216,6 +225,7 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
     assert {event["run_id"] for event in events} == {result.run.id}
     assert events[-1]["payload"]["status"] == "succeeded"
     assert events[-1]["payload"]["runtime_result"] == result.runtime_result.to_dict()
+    assert events[0]["payload"]["runtime_paths"] == result.runtime.paths.to_dict()
 
 
 @pytest.mark.parametrize("status", ["draft", "rejected"])
@@ -372,6 +382,64 @@ def test_pre_cancelled_managed_runtime_skips_provider_and_validation(tmp_path, m
     events = _events(result.events_path)
     assert "turn_interrupted" in [event["event_type"] for event in events]
     assert "validation_started" not in [event["event_type"] for event in events]
+    assert events[-1]["payload"]["status"] == "cancelled"
+
+
+def test_cancellation_during_validation_stops_command_and_persists_cancelled_run(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = _repository(tmp_path)
+    commands = [
+        [
+            "python",
+            "-c",
+            (
+                "import time; from pathlib import Path; "
+                "Path('validation-started.txt').write_text('yes'); time.sleep(10)"
+            ),
+        ],
+        ["python", "-c", "from pathlib import Path; Path('second-validation.txt').touch()"],
+    ]
+    store, record = _stored_plan(tmp_path, repository, validation_commands=commands)
+    provider = FakeProvider([LLMResponse(content="Agent work completed.")])
+    token = CancellationToken()
+
+    def cancel_after_validation_starts() -> None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if list((tmp_path / "runs").glob("*/workspace/validation-started.txt")):
+                token.cancel("cancel during validation")
+                return
+            time.sleep(0.01)
+
+    cancellation_thread = threading.Thread(target=cancel_after_validation_starts)
+    cancellation_thread.start()
+    result = _service(tmp_path, store, provider).execute(
+        record.reference,
+        cancellation_token=token,
+    )
+    cancellation_thread.join(timeout=5)
+
+    assert result.run.status == "cancelled"
+    assert result.runtime_result.status is RuntimeResultStatus.CANCELLED
+    assert result.runtime_result.reason == "cancel during validation"
+    assert result.validation is not None
+    assert result.validation.status == "cancelled"
+    assert [command.status for command in result.validation.commands] == ["cancelled"]
+    assert result.validation_path is not None and result.validation_path.is_file()
+    assert not (result.workspace.path / "second-validation.txt").exists()
+    assert result.patch_path.is_file()
+    assert result.report_path.is_file()
+    metadata = json.loads(result.runtime.paths.run_metadata_path.read_text(encoding="utf-8"))
+    assert metadata["status"] == "cancelled"
+    assert metadata["result"]["validation"]["status"] == "cancelled"
+    assert metadata["result"]["artifacts"]["session"] == str(result.runtime.session_path)
+    events = _events(result.events_path)
+    validation_event = next(event for event in events if event["event_type"] == "validation_completed")
+    assert validation_event["payload"]["status"] == "cancelled"
+    assert events[-1]["event_type"] == "run_finished"
     assert events[-1]["payload"]["status"] == "cancelled"
 
 

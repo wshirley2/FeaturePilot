@@ -233,7 +233,10 @@ class PlanChatSession:
             self.console.print(self.last_result.response)
         validation = self.last_result.validation
         if validation is not None:
-            validation_style = "green" if validation.status == "passed" else "red"
+            validation_style = {
+                "passed": "green",
+                "cancelled": "yellow",
+            }.get(validation.status, "red")
             self.console.print(
                 f"[{validation_style}]系统验证：{validation.status}[/{validation_style}] "
                 f"({self.last_result.validation_path})"
@@ -243,10 +246,12 @@ class PlanChatSession:
                 f"[yellow]系统验证：未启动（{self.last_result.runtime_result.status.value}）[/yellow]"
             )
         self.console.print(f"Events: {self.last_result.events_path}")
+        if self.last_result.runtime.session_path is not None:
+            self.console.print(f"Session: {self.last_result.runtime.session_path}")
         self.console.print(f"Patch: {self.last_result.patch_path}")
         self.console.print(f"Report: {self.last_result.report_path}")
         if self.last_result.run.status != "succeeded":
-            if validation is not None and validation.status != "passed":
+            if self.last_result.run.status == "failed" and validation is not None:
                 self.console.print("[red]Managed Run 验证未通过，Workspace 已保留。[/red]")
             else:
                 self.console.print(

@@ -124,6 +124,7 @@ def make_runtime(
     console: Console,
     *,
     permission_prompt=None,
+    session_directory: Path | None = None,
 ):
     sink = TerminalEventSink(console)
     bootstrap = RuntimeBootstrap(provider_factory=lambda config: provider)
@@ -131,15 +132,21 @@ def make_runtime(
         repository=repository,
         event_sink=sink,
         permission_prompt=permission_prompt,
+        session_directory=session_directory,
     ))
 
 
-def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(monkeypatch):
+def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     provider = FakeProvider([LLMResponse(content="ok")])
     console = Console(file=StringIO(), force_terminal=False, color_system=None)
 
-    runtime = make_runtime(BENCHMARK_ROOT, provider, console)
+    runtime = make_runtime(
+        BENCHMARK_ROOT,
+        provider,
+        console,
+        session_directory=tmp_path / "sessions",
+    )
 
     assert runtime.repository == BENCHMARK_ROOT.resolve()
     assert isinstance(runtime, TaskRuntime)
@@ -166,7 +173,7 @@ def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(mo
     }
 
 
-def test_featurepilot_model_setting_overrides_legacy_config_but_not_cli(monkeypatch):
+def test_featurepilot_model_setting_overrides_legacy_config_but_not_cli(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     monkeypatch.setenv("CORECODER_MODEL", "legacy-corecoder-model")
     monkeypatch.delenv("FEATUREPILOT_MODEL", raising=False)
@@ -178,6 +185,7 @@ def test_featurepilot_model_setting_overrides_legacy_config_but_not_cli(monkeypa
                 repository=BENCHMARK_ROOT,
                 event_sink=TerminalEventSink(console),
                 model=model,
+                session_directory=tmp_path / "sessions",
             )
         )
 
@@ -417,12 +425,17 @@ def test_diff_does_not_leak_a_parent_git_worktree(monkeypatch, tmp_path):
     assert "已避免展示父级仓库的变更" in output.getvalue()
 
 
-def test_ctrl_c_cancels_only_current_turn_and_chat_continues(monkeypatch):
+def test_ctrl_c_cancels_only_current_turn_and_chat_continues(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     provider = FakeProvider([KeyboardInterrupt(), LLMResponse(content="second turn works")])
     output = StringIO()
     console = Console(file=output, force_terminal=False, color_system=None)
-    runtime = make_runtime(BENCHMARK_ROOT, provider, console)
+    runtime = make_runtime(
+        BENCHMARK_ROOT,
+        provider,
+        console,
+        session_directory=tmp_path / "sessions",
+    )
     inputs = iter(["interrupt this turn", "continue", "/exit"])
 
     assert ChatSession(runtime, console=console, input_fn=lambda prompt: next(inputs)).run() == 0

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,7 +26,17 @@ class RunEventLog:
         directory = run_directory.resolve()
         if not directory.is_dir():
             raise ValueError(f"Run directory does not exist: {run_directory}")
-        path = directory / "events.jsonl"
+        return cls.create_at(run_id, directory / "events.jsonl")
+
+    @classmethod
+    def create_at(cls, run_id: str, path: Path) -> RunEventLog:
+        """Create the event log at one canonical Managed Run artifact path."""
+
+        path = path.resolve()
+        if not path.parent.is_dir():
+            raise ValueError(f"Run directory does not exist: {path.parent}")
+        if path.name != "events.jsonl":
+            raise ValueError("Managed Run events must be stored at <run>/events.jsonl")
         with path.open("x", encoding="utf-8", newline="\n"):
             pass
         return cls(run_id, path)
@@ -56,6 +67,7 @@ class RunEventLog:
         with self._lock, self.path.open("a", encoding="utf-8", newline="\n") as stream:
             stream.write(f"{line}\n")
             stream.flush()
+            os.fsync(stream.fileno())
 
 
 class ManagedRunEventSink:

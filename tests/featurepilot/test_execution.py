@@ -1,12 +1,15 @@
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from corecoder.agent import Agent
 from corecoder.llm import LLM
+from corecoder.runtime_control import CancellationToken
 from corecoder.tools.base import Tool
 from corecoder.tools.glob_tool import GlobTool
 from corecoder.tools.grep import GrepTool
@@ -238,6 +241,121 @@ def test_validation_service_writes_a_passed_artifact_when_no_commands_are_requir
     assert artifact.commands == []
     assert artifact_path == workspace_path.parent / "validation.json"
     assert artifact_path.is_file()
+
+
+def test_validation_runner_does_not_start_a_pre_cancelled_command(tmp_path):
+    workspace_path = tmp_path / "run" / "workspace"
+    workspace_path.mkdir(parents=True)
+    token = CancellationToken()
+    token.cancel("cancel before validation")
+
+    result = ValidationCommandRunner().execute(
+        [sys.executable, "-c", "from pathlib import Path; Path('must-not-exist').touch()"],
+        workspace_path,
+        cancellation_token=token,
+    )
+
+    assert result.status == "cancelled"
+    assert result.exit_code is None
+    assert result.error == "cancel before validation"
+    assert not (workspace_path / "must-not-exist").exists()
+
+
+def test_validation_runner_cancels_the_running_process_tree(tmp_path):
+    workspace_path = tmp_path / "run" / "workspace"
+    workspace_path.mkdir(parents=True)
+    token = CancellationToken()
+    child_code = (
+        "import time; from pathlib import Path; time.sleep(0.6); "
+        "Path('child-finished.txt').write_text('unexpected')"
+    )
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import subprocess, sys, time; from pathlib import Path; "
+            f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+            "Path('validation-started.txt').write_text('yes'); time.sleep(10)"
+        ),
+    ]
+
+    def cancel_after_start() -> None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if (workspace_path / "validation-started.txt").exists():
+                token.cancel("cancel running validation")
+                return
+            time.sleep(0.01)
+
+    cancellation_thread = threading.Thread(target=cancel_after_start)
+    cancellation_thread.start()
+    result = ValidationCommandRunner(timeout_seconds=10).execute(
+        command,
+        workspace_path,
+        cancellation_token=token,
+    )
+    cancellation_thread.join(timeout=5)
+
+    assert result.status == "cancelled"
+    assert result.error == "cancel running validation"
+    assert result.duration_seconds < 5
+    time.sleep(0.8)
+    assert not (workspace_path / "child-finished.txt").exists()
+
+
+def test_validation_runner_converts_ctrl_c_to_a_cancelled_result(tmp_path, monkeypatch):
+    workspace_path = tmp_path / "run" / "workspace"
+    workspace_path.mkdir(parents=True)
+
+    class InterruptingProcess:
+        pid = 123
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def communicate(self, timeout=None):
+            raise KeyboardInterrupt
+
+    process = InterruptingProcess()
+    monkeypatch.setattr("featurepilot.execution.validation.subprocess.Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr("featurepilot.execution.validation._create_windows_job", lambda current: None)
+    monkeypatch.setattr(
+        "featurepilot.execution.validation._stop_process_tree",
+        lambda current, job: ("partial stdout", "partial stderr"),
+    )
+
+    result = ValidationCommandRunner().execute(
+        [sys.executable, "-c", "print('never completes')"],
+        workspace_path,
+    )
+
+    assert result.status == "cancelled"
+    assert result.error == "Validation cancelled by user"
+    assert result.stdout == "partial stdout"
+    assert result.stderr == "partial stderr"
+
+
+def test_validation_service_stops_remaining_commands_after_cancellation(tmp_path):
+    workspace_path = tmp_path / "run" / "workspace"
+    workspace_path.mkdir(parents=True)
+    token = CancellationToken()
+    token.cancel("stop validation sequence")
+
+    artifact, artifact_path = ValidationService().validate(
+        "run-id",
+        workspace_path,
+        [
+            [sys.executable, "-c", "print('first')"],
+            [sys.executable, "-c", "from pathlib import Path; Path('second.txt').touch()"],
+        ],
+        cancellation_token=token,
+    )
+
+    assert artifact.status == "cancelled"
+    assert [result.status for result in artifact.commands] == ["cancelled"]
+    assert artifact_path.is_file()
+    assert not (workspace_path / "second.txt").exists()
 
 
 def test_featurepilot_tool_set_excludes_network_and_delegation():

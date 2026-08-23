@@ -51,8 +51,13 @@ class ReportService:
         changes: ChangeArtifact,
         patch_path: Path,
         metrics: RunMetrics,
+        session_path: Path | None = None,
+        output_path: Path | None = None,
     ) -> Path:
-        report_path = workspace.path.resolve().parent / "report.md"
+        run_directory = workspace.path.resolve().parent
+        report_path = (output_path or run_directory / "report.md").resolve()
+        if report_path != run_directory / "report.md":
+            raise ValueError("Managed Run report must be stored at <run>/report.md")
         content = _render_report(
             record=record,
             run=run,
@@ -64,6 +69,7 @@ class ReportService:
             changes=changes,
             patch_path=patch_path,
             metrics=metrics,
+            session_path=session_path,
         )
         _atomic_write_report(report_path, content, run.id)
         return report_path
@@ -98,6 +104,7 @@ def _render_report(
     changes: ChangeArtifact,
     patch_path: Path,
     metrics: RunMetrics,
+    session_path: Path | None = None,
 ) -> str:
     task = record.task.description if record.task else record.plan.summary
     lines = [
@@ -111,6 +118,7 @@ def _render_report(
         f"- Status: **{run.status}**",
         f"- Workspace: `{workspace.path}`",
         f"- Events: `{events_path}`",
+        f"- Session: `{session_path}`" if session_path else "- Session: not produced",
         f"- Patch: `{patch_path}`",
         f"- Validation: `{validation_path}`" if validation_path else "- Validation: not produced",
         "",

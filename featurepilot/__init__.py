@@ -8,6 +8,7 @@ from .runtime_contracts import (
     RuntimeResultScope,
     RuntimeResultStatus,
     TaskRuntimeIdentity,
+    TaskRuntimePaths,
     TaskRuntimeResult,
 )
 
@@ -17,6 +18,7 @@ __all__ = [
     "RuntimeResultScope",
     "RuntimeResultStatus",
     "TaskRuntimeIdentity",
+    "TaskRuntimePaths",
     "TaskRuntimeResult",
     "__version__",
 ]

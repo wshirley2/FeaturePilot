@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from ..domain import PlanRecord, Run
+from ..runtime_contracts import TaskRuntimePaths
 from .backend import Workspace, WorkspaceBackend
 
 
@@ -25,7 +26,11 @@ class WorkspaceService:
         self.save_run(run)
         return run, workspace
 
-    def save_run(self, run: Run) -> Path:
+    def save_run(
+        self,
+        run: Run,
+        runtime_paths: TaskRuntimePaths | None = None,
+    ) -> Path:
         """Atomically persist the current Run state beside its Workspace."""
 
         if not run.workspace_path:
@@ -34,7 +39,13 @@ class WorkspaceService:
         if workspace_path.name != "workspace" or not workspace_path.is_dir():
             raise ValueError(f"Run workspace directory does not exist: {run.workspace_path}")
 
-        metadata_path = workspace_path.parent / "run.json"
+        metadata_path = (
+            runtime_paths.run_metadata_path
+            if runtime_paths is not None
+            else workspace_path.parent / "run.json"
+        )
+        if metadata_path.parent != workspace_path.parent:
+            raise ValueError("Run metadata must remain beside its Workspace")
         temporary_path = workspace_path.parent / f".run-{run.id}.tmp"
         payload = f"{json.dumps(run.to_dict(), ensure_ascii=False, indent=2)}\n"
         try:

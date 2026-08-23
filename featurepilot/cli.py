@@ -402,7 +402,10 @@ def _run_managed(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
     if not sink.last_turn_streamed and result.response:
         console.print(result.response)
     if result.validation is not None:
-        validation_style = "green" if result.validation.status == "passed" else "red"
+        validation_style = {
+            "passed": "green",
+            "cancelled": "yellow",
+        }.get(result.validation.status, "red")
         console.print(
             f"[{validation_style}]Validation: {result.validation.status}[/{validation_style}] "
             f"({result.validation_path})"
@@ -412,10 +415,12 @@ def _run_managed(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
             f"[yellow]Validation: not started ({result.runtime_result.status.value})[/yellow]"
         )
     console.print(f"Events: {result.events_path}")
+    if result.runtime.session_path is not None:
+        console.print(f"Session: {result.runtime.session_path}")
     console.print(f"Patch: {result.patch_path}")
     console.print(f"Report: {result.report_path}")
     if result.run.status != "succeeded":
-        if result.validation is not None and result.validation.status != "passed":
+        if result.run.status == "failed" and result.validation is not None:
             console.print("[red]Managed Run failed validation. Workspace retained.[/red]")
         else:
             console.print(

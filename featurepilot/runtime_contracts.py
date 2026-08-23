@@ -37,6 +37,92 @@ class RuntimeResultStatus(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class TaskRuntimePaths:
+    """Canonical persistence and working-directory boundaries for one Runtime."""
+
+    mode: RuntimeMode
+    working_directory: Path
+    session_directory: Path
+    run_directory: Path | None = None
+
+    def __post_init__(self) -> None:
+        mode = RuntimeMode(self.mode)
+        working_directory = self.working_directory.resolve()
+        session_directory = self.session_directory.resolve()
+        run_directory = self.run_directory.resolve() if self.run_directory is not None else None
+        if mode is RuntimeMode.CHAT and run_directory is not None:
+            raise ValueError("Chat Runtime cannot have a Managed Run directory")
+        if mode is RuntimeMode.MANAGED_RUN:
+            if run_directory is None:
+                raise ValueError("Managed Run Runtime requires a Run directory")
+            if working_directory != run_directory / "workspace":
+                raise ValueError("Managed Run working directory must be <run>/workspace")
+            if session_directory != run_directory / "sessions":
+                raise ValueError("Managed Run Session directory must be <run>/sessions")
+        object.__setattr__(self, "mode", mode)
+        object.__setattr__(self, "working_directory", working_directory)
+        object.__setattr__(self, "session_directory", session_directory)
+        object.__setattr__(self, "run_directory", run_directory)
+
+    @classmethod
+    def for_runtime(
+        cls,
+        mode: RuntimeMode,
+        working_directory: Path,
+        session_directory: Path | None = None,
+    ) -> TaskRuntimePaths:
+        """Build the default path layout for Chat or one isolated Managed Run."""
+
+        runtime_mode = RuntimeMode(mode)
+        working = working_directory.resolve()
+        if runtime_mode is RuntimeMode.CHAT:
+            sessions = (
+                session_directory.resolve()
+                if session_directory is not None
+                else working / ".featurepilot" / "sessions"
+            )
+            return cls(runtime_mode, working, sessions)
+        run_directory = working.parent
+        sessions = run_directory / "sessions"
+        if session_directory is not None and session_directory.resolve() != sessions:
+            raise ValueError("Managed Run Session directory is fixed at <run>/sessions")
+        return cls(runtime_mode, working, sessions, run_directory)
+
+    def require_run_directory(self) -> Path:
+        if self.run_directory is None:
+            raise ValueError("This Runtime does not have Managed Run artifacts")
+        return self.run_directory
+
+    @property
+    def run_metadata_path(self) -> Path:
+        return self.require_run_directory() / "run.json"
+
+    @property
+    def events_path(self) -> Path:
+        return self.require_run_directory() / "events.jsonl"
+
+    @property
+    def validation_path(self) -> Path:
+        return self.require_run_directory() / "validation.json"
+
+    @property
+    def patch_path(self) -> Path:
+        return self.require_run_directory() / "changes.patch"
+
+    @property
+    def report_path(self) -> Path:
+        return self.require_run_directory() / "report.md"
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "mode": self.mode.value,
+            "working_directory": str(self.working_directory),
+            "session_directory": str(self.session_directory),
+            "run_directory": str(self.run_directory) if self.run_directory is not None else None,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TaskRuntimeResult:
     """Immutable terminal result for one turn or one complete managed run."""
 

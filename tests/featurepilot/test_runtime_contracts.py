@@ -9,6 +9,7 @@ from featurepilot.runtime_contracts import (
     RuntimeResultScope,
     RuntimeResultStatus,
     TaskRuntimeIdentity,
+    TaskRuntimePaths,
     TaskRuntimeResult,
 )
 
@@ -53,6 +54,31 @@ def test_managed_runtime_identity_correlates_task_run_and_workspace(tmp_path):
 
     assert identity.mode.display_name == "Managed Run"
     assert identity.workspace_path == workspace.resolve()
+
+
+def test_chat_runtime_paths_keep_sessions_under_repository_by_default(tmp_path):
+    paths = TaskRuntimePaths.for_runtime(RuntimeMode.CHAT, tmp_path)
+
+    assert paths.working_directory == tmp_path.resolve()
+    assert paths.session_directory == tmp_path.resolve() / ".featurepilot" / "sessions"
+    assert paths.run_directory is None
+    with pytest.raises(ValueError, match="does not have Managed Run artifacts"):
+        _ = paths.events_path
+
+
+def test_managed_runtime_paths_keep_sessions_and_artifacts_outside_workspace(tmp_path):
+    workspace = tmp_path / "run" / "workspace"
+    workspace.mkdir(parents=True)
+
+    paths = TaskRuntimePaths.for_runtime(RuntimeMode.MANAGED_RUN, workspace)
+
+    assert paths.run_directory == workspace.parent.resolve()
+    assert paths.session_directory == workspace.parent.resolve() / "sessions"
+    assert paths.run_metadata_path == workspace.parent.resolve() / "run.json"
+    assert paths.events_path == workspace.parent.resolve() / "events.jsonl"
+    assert paths.validation_path == workspace.parent.resolve() / "validation.json"
+    assert paths.patch_path == workspace.parent.resolve() / "changes.patch"
+    assert paths.report_path == workspace.parent.resolve() / "report.md"
 
 
 @pytest.mark.parametrize(

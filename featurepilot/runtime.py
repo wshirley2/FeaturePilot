@@ -20,7 +20,12 @@ from .chat_executor import RepositoryToolExecutor
 from .permissions import ChatPermissionPolicy
 from .repository import RepositoryProfiler
 from .repository.profiler import RepositoryProfile
-from .runtime_contracts import RuntimeMode, TaskRuntimeIdentity, TaskRuntimeResult
+from .runtime_contracts import (
+    RuntimeMode,
+    TaskRuntimeIdentity,
+    TaskRuntimePaths,
+    TaskRuntimeResult,
+)
 from .sessions import SessionEventSink, SessionProjection, SessionStore
 
 ProviderFactory = Callable[[Config], object]
@@ -46,11 +51,13 @@ class RuntimeBootstrapInput:
     task_id: str | None = None
     run_id: str | None = None
     source_repository: Path | None = None
+    paths: TaskRuntimePaths | None = None
 
 
 @dataclass
 class TaskRuntime:
     identity: TaskRuntimeIdentity
+    paths: TaskRuntimePaths
     repository: Path
     config: Config
     agent: Agent
@@ -84,6 +91,12 @@ class TaskRuntime:
     @property
     def last_result(self) -> TaskRuntimeResult | None:
         return self.session_sink.last_result if self.session_sink is not None else None
+
+    @property
+    def session_path(self) -> Path | None:
+        if self.session_store is None:
+            return None
+        return self.session_store.path_for(self.identity.session_id)
 
     def record_result(self, result: TaskRuntimeResult) -> None:
         """Record a complete Runtime result after orchestration-level work finishes."""
@@ -174,6 +187,15 @@ class RuntimeBootstrap:
         if not repository.is_dir():
             raise ValueError(f"Repository directory does not exist: {inputs.repository}")
         mode = RuntimeMode(inputs.mode)
+        paths = inputs.paths or TaskRuntimePaths.for_runtime(
+            mode,
+            repository,
+            inputs.session_directory,
+        )
+        if inputs.paths is not None and inputs.session_directory is not None:
+            raise ValueError("Pass either Runtime paths or a Session directory, not both")
+        if paths.mode is not mode or paths.working_directory != repository:
+            raise ValueError("Runtime paths do not match the requested mode and working directory")
         source_repository = (inputs.source_repository or repository).resolve()
         if not source_repository.is_dir():
             raise ValueError(f"Source repository directory does not exist: {source_repository}")
@@ -208,7 +230,7 @@ class RuntimeBootstrap:
             if inputs.tools is not None
             else [tool for name in _CHAT_TOOL_NAMES if (tool := get_tool(name)) is not None]
         )
-        session_store = SessionStore.for_repository(repository, inputs.session_directory)
+        session_store = SessionStore(paths.session_directory)
         resume_projection = None
         if inputs.resume_session_id:
             resume_projection = session_store.replay(inputs.resume_session_id)
@@ -268,6 +290,7 @@ class RuntimeBootstrap:
                 source_repository=source_repository,
                 working_directory=repository,
             ),
+            paths=paths,
             repository=repository,
             config=config,
             agent=agent,

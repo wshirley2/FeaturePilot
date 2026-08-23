@@ -26,6 +26,7 @@ from .runtime_contracts import (
     RuntimeMode,
     RuntimeResultScope,
     RuntimeResultStatus,
+    TaskRuntimePaths,
     TaskRuntimeResult,
 )
 from .workspace import Workspace, WorkspaceService
@@ -124,7 +125,8 @@ class ManagedRunService:
             )
 
         run, workspace = self.workspace_service.create_for_plan(record)
-        event_log = RunEventLog.create(run.id, workspace.path.parent)
+        paths = TaskRuntimePaths.for_runtime(RuntimeMode.MANAGED_RUN, workspace.path)
+        event_log = RunEventLog.create_at(run.id, paths.events_path)
         events_path = event_log.path
         event_log.record("run_created", {
             "plan_reference": record.reference,
@@ -132,13 +134,14 @@ class ManagedRunService:
             "task_id": record.plan.task_id,
             "workspace": str(workspace.path),
             "source_snapshot": workspace.source_snapshot,
+            "runtime_paths": paths.to_dict(),
         })
         managed_sink = ManagedRunEventSink(event_log, self.event_sink)
         baseline = self.change_service.capture(workspace.source_path)
         context = ExecutionContext(record=record, run=run, workspace=workspace)
         executor = WorkspaceToolExecutor(context)
         run.transition("running")
-        self.workspace_service.save_run(run)
+        self.workspace_service.save_run(run, paths)
         event_log.record("run_started", {
             "workspace": str(workspace.path),
             "permission_mode": "approved Plan scope in an isolated Workspace",
@@ -165,13 +168,13 @@ class ManagedRunService:
                 run_id=run.id,
                 source_repository=workspace.source_path,
                 limits=limits,
+                paths=paths,
             ))
             response = runtime.run_turn(
                 _managed_task(record),
                 cancellation_token=cancellation_token,
             )
             runtime.ensure_persisted()
-            managed_sink.ensure_persisted()
             if runtime.last_result is not None and runtime.last_result.status in {
                 RuntimeResultStatus.CANCELLED,
                 RuntimeResultStatus.LIMIT_REACHED,
@@ -182,6 +185,7 @@ class ManagedRunService:
                     record=record,
                     run=run,
                     workspace=workspace,
+                    paths=paths,
                     baseline=baseline,
                     runtime=runtime,
                     response=response,
@@ -194,7 +198,7 @@ class ManagedRunService:
                     started=started,
                 )
                 _record_terminal_event(event_log, run.status, result_payload)
-                self.workspace_service.save_run(run)
+                self.workspace_service.save_run(run, paths)
                 if artifacts is None:
                     raise _ControlledStopArtifactError(
                         "Could not generate artifacts for the controlled Runtime stop"
@@ -221,6 +225,8 @@ class ManagedRunService:
                 run.id,
                 workspace.path,
                 record.plan.validation_commands,
+                cancellation_token=cancellation_token,
+                artifact_path=paths.validation_path,
             )
             event_log.record("validation_completed", {
                 "status": validation.status,
@@ -237,6 +243,7 @@ class ManagedRunService:
                 record=record,
                 run=run,
                 workspace=workspace,
+                paths=paths,
                 baseline=baseline,
                 runtime=runtime,
                 response=response,
@@ -249,10 +256,10 @@ class ManagedRunService:
                 started=started,
             )
             _record_terminal_event(event_log, run.status, result_payload)
-            self.workspace_service.save_run(run)
+            self.workspace_service.save_run(run, paths)
             raise
         except _ControlledStopArtifactError as error:
-            self.workspace_service.save_run(run)
+            self.workspace_service.save_run(run, paths)
             raise ManagedRunExecutionError(
                 run,
                 workspace,
@@ -269,6 +276,7 @@ class ManagedRunService:
                 record=record,
                 run=run,
                 workspace=workspace,
+                paths=paths,
                 baseline=baseline,
                 runtime=runtime,
                 response=response,
@@ -281,7 +289,7 @@ class ManagedRunService:
                 started=started,
             )
             _record_terminal_event(event_log, run.status, result_payload)
-            self.workspace_service.save_run(run)
+            self.workspace_service.save_run(run, paths)
             raise ManagedRunExecutionError(
                 run,
                 workspace,
@@ -302,7 +310,13 @@ class ManagedRunService:
             },
         }
         final_status = "succeeded"
-        if validation.status != "passed":
+        if validation.status == "cancelled":
+            final_status = "cancelled"
+            result_payload.update({
+                "error_type": "ValidationCancelled",
+                "error": _validation_cancellation_reason(validation, cancellation_token),
+            })
+        elif validation.status != "passed":
             final_status = "failed"
             result_payload.update({
                 "error_type": "ValidationFailed",
@@ -313,6 +327,7 @@ class ManagedRunService:
                 record=record,
                 run=run,
                 workspace=workspace,
+                paths=paths,
                 baseline=baseline,
                 runtime=runtime,
                 response=response,
@@ -338,7 +353,7 @@ class ManagedRunService:
             )
             run.transition("failed", result=failure_result)
             _record_terminal_event(event_log, run.status, failure_result)
-            self.workspace_service.save_run(run)
+            self.workspace_service.save_run(run, paths)
             raise ManagedRunExecutionError(
                 run,
                 workspace,
@@ -367,7 +382,7 @@ class ManagedRunService:
                 result=failure_result,
             )
             run.transition("failed", result=failure_result)
-            self.workspace_service.save_run(run)
+            self.workspace_service.save_run(run, paths)
             raise ManagedRunExecutionError(
                 run,
                 workspace,
@@ -377,7 +392,7 @@ class ManagedRunService:
                 report_path=artifacts.report_path,
             ) from error
         run.transition(final_status, result=result_payload)
-        self.workspace_service.save_run(run)
+        self.workspace_service.save_run(run, paths)
         return ManagedRunResult(
             record=record,
             run=run,
@@ -400,6 +415,7 @@ class ManagedRunService:
         record: PlanRecord,
         run: Run,
         workspace: Workspace,
+        paths: TaskRuntimePaths,
         baseline: RepositorySnapshot,
         runtime: TaskRuntime | None,
         response: str,
@@ -416,6 +432,7 @@ class ManagedRunService:
                 record=record,
                 run=run,
                 workspace=workspace,
+                paths=paths,
                 baseline=baseline,
                 runtime=runtime,
                 response=response,
@@ -448,6 +465,7 @@ class ManagedRunService:
         record: PlanRecord,
         run: Run,
         workspace: Workspace,
+        paths: TaskRuntimePaths,
         baseline: RepositorySnapshot,
         runtime: TaskRuntime | None,
         response: str,
@@ -459,7 +477,12 @@ class ManagedRunService:
         result_payload: dict[str, object],
         started: float,
     ) -> _GeneratedArtifacts:
-        changes, patch_path = self.change_service.generate(baseline, workspace, record)
+        changes, patch_path = self.change_service.generate(
+            baseline,
+            workspace,
+            record,
+            output_path=paths.patch_path,
+        )
         event_log.record("changes_generated", {
             "path": str(patch_path),
             "file_count": len(changes.files),
@@ -480,6 +503,8 @@ class ManagedRunService:
             changes=changes,
             patch_path=patch_path,
             metrics=metrics,
+            session_path=runtime.session_path if runtime is not None else None,
+            output_path=paths.report_path,
         )
         event_log.record("report_generated", {
             "path": str(report_path),
@@ -490,6 +515,7 @@ class ManagedRunService:
             "metrics": metrics.to_dict(),
             "artifacts": {
                 "events": str(events_path),
+                "session": str(runtime.session_path) if runtime is not None else None,
                 "patch": str(patch_path),
                 "validation": str(validation_path) if validation_path else None,
                 "report": str(report_path),
@@ -565,6 +591,18 @@ def _runtime_limits_payload(limits: RuntimeLimits | None) -> dict[str, int | flo
     }
 
 
+def _validation_cancellation_reason(
+    validation: ValidationArtifact,
+    cancellation_token: CancellationToken | None,
+) -> str:
+    for command in reversed(validation.commands):
+        if command.status == "cancelled" and command.error:
+            return command.error
+    if cancellation_token is not None and cancellation_token.cancelled:
+        return cancellation_token.reason
+    return "Validation cancelled"
+
+
 def _attach_runtime_result(
     runtime: TaskRuntime | None,
     *,
@@ -612,6 +650,7 @@ def _attach_runtime_result(
     result["runtime_result"] = runtime_result.to_dict()
     if runtime is not None:
         runtime.record_result(runtime_result)
+        runtime.ensure_persisted()
     return runtime_result
 
 

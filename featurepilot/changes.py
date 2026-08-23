@@ -78,6 +78,8 @@ class ChangeService:
         snapshot: RepositorySnapshot,
         workspace: Workspace,
         record: PlanRecord,
+        *,
+        output_path: Path | None = None,
     ) -> tuple[ChangeArtifact, Path]:
         workspace_files = _read_repository_files(workspace.path.resolve())
         approved = {
@@ -111,7 +113,10 @@ class ChangeService:
             ))
 
         artifact = ChangeArtifact(source_digest=snapshot.digest, files=changes)
-        patch_path = workspace.path.resolve().parent / "changes.patch"
+        run_directory = workspace.path.resolve().parent
+        patch_path = (output_path or run_directory / "changes.patch").resolve()
+        if patch_path != run_directory / "changes.patch":
+            raise ValueError("Managed Run patch must be stored at <run>/changes.patch")
         _atomic_write_text(patch_path, "".join(patch_parts), suffix=workspace.run_id)
         return artifact, patch_path
 
