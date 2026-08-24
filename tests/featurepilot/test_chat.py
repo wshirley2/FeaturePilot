@@ -493,7 +493,7 @@ def test_chat_can_upgrade_an_isolated_write_without_touching_source_or_replaying
     lock_file.write_text("original\n", encoding="utf-8")
     provider = FakeProvider([
         LLMResponse(tool_calls=[ToolCall(
-            "lock-write",
+            "lock_write",
             "write_file",
             {"file_path": "poetry.lock", "content": "isolated\n"},
         )]),

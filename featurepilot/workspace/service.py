@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from ..domain import ExecutionScope, PlanRecord, Run
@@ -27,7 +28,11 @@ class WorkspaceService:
         """Create an isolated Workspace for an already approved execution scope."""
 
         run = Run(task_id=scope.task.id, plan_id=scope.plan_id)
-        workspace = self.backend.create(scope.source_repository, run.id, label=scope.reference)
+        workspace = self.backend.create(
+            scope.source_repository,
+            run.id,
+            label=_workspace_label(scope.reference),
+        )
         run.workspace_path = str(workspace.path)
         run.source_snapshot = workspace.source_snapshot
         self.save_run(run)
@@ -62,3 +67,15 @@ class WorkspaceService:
             temporary_path.unlink(missing_ok=True)
             raise
         return metadata_path
+
+
+def _workspace_label(reference: str) -> str:
+    """Turn a human-readable scope reference into a safe directory label.
+
+    Tool Call IDs are provider-owned and may include underscores or other
+    punctuation that the Workspace backend deliberately rejects. The original
+    reference remains in Run Events; only the directory label is normalized.
+    """
+
+    label = re.sub(r"[^A-Za-z0-9.-]+", "-", reference).strip(".-")
+    return label or "execution"
