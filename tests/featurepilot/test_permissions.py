@@ -256,6 +256,7 @@ def test_file_session_grant_allows_later_write_to_same_path(tmp_path):
     [
         ("git status --short", PermissionAction.ALLOW),
         ("dir", PermissionAction.ALLOW),
+        ("ls -la", PermissionAction.ALLOW),
         ("git diff --output=patch.txt", PermissionAction.ASK),
         ("python -m pytest -q", PermissionAction.ALLOW),
         ("python -m ruff check .", PermissionAction.ALLOW),

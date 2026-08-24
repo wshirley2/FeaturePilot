@@ -58,7 +58,7 @@ _READ_ONLY_GIT = {
     "show",
     "status",
 }
-_READ_ONLY_SHELL = {"dir"}
+_READ_ONLY_SHELL = {"dir", "ls"}
 _SHELL_OPERATORS = {"&", "&&", "|", "||", ";", ">", ">>", "<", "<<"}
 
 
