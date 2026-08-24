@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -13,6 +17,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from corecoder.context import estimate_tokens
 from corecoder.events import RuntimeEvent, RuntimeEventType
@@ -21,6 +26,46 @@ from corecoder.tools.edit import _changed_files
 from .runtime import TaskRuntime
 
 InputFunction = Callable[[str], str]
+_DETAIL_PAGE_SIZE = 8_000
+
+
+@dataclass
+class ToolCallDetail:
+    """A display-only projection assembled from existing Runtime Events."""
+
+    call_id: str
+    tool_name: str = "unknown"
+    arguments: object = None
+    requested_at: str | datetime | None = None
+    result: str | None = None
+    completed_at: str | datetime | None = None
+    interrupted: bool = False
+    execution_control: dict[str, object] | None = None
+
+    @property
+    def status(self) -> str:
+        if self.result is None:
+            return "running"
+        return "interrupted" if self.interrupted else _tool_status(self.result)
+
+    @property
+    def duration_seconds(self) -> float | None:
+        started = _as_datetime(self.requested_at)
+        completed = _as_datetime(self.completed_at)
+        if started is None or completed is None:
+            return None
+        return max(0.0, (completed - started).total_seconds())
+
+
+@dataclass
+class _CollapsedToolCall:
+    """Ephemeral terminal state for a compact, per-turn tool-call summary."""
+
+    call_id: str
+    tool_name: str
+    started_at: float
+    status: str | None = None
+    completed_at: float | None = None
 
 
 class SlashCommandCompleter(Completer):
@@ -66,6 +111,8 @@ class TerminalEventSink:
         self.console = console or Console()
         self.result_limit = result_limit
         self._tool_started: dict[str, tuple[float, str]] = {}
+        self._collapsed_tool_calls: dict[str, _CollapsedToolCall] = {}
+        self._blocked_tool_calls: set[str] = set()
         self._streamed = False
         self.last_turn_streamed = False
         self.show_full_results = False
@@ -74,21 +121,36 @@ class TerminalEventSink:
         if event.event_type is RuntimeEventType.TURN_STARTED:
             self._streamed = False
             self.last_turn_streamed = False
+            self._tool_started.clear()
+            self._collapsed_tool_calls.clear()
+            self._blocked_tool_calls.clear()
         elif event.event_type is RuntimeEventType.ASSISTANT_TOKEN:
+            self._render_collapsed_tool_calls()
             self.console.print(event.payload.get("token", ""), end="", markup=False, highlight=False)
             self._streamed = True
             self.last_turn_streamed = True
         elif event.event_type is RuntimeEventType.TOOL_REQUESTED:
             call_id = event.tool_call_id or event.event_id
             name = event.payload.get("tool_name", "unknown")
-            self._tool_started[call_id] = (time.monotonic(), str(name))
-            arguments = _brief_arguments(event.payload.get("arguments", {}))
-            prefix = "\n" if self._streamed else ""
-            self.console.print(f"{prefix}[dim]→ {name}({arguments})[/dim]")
-            self._streamed = False
+            started_at = time.monotonic()
+            self._tool_started[call_id] = (started_at, str(name))
+            if self.show_full_results:
+                arguments = _brief_arguments(event.payload.get("arguments", {}))
+                prefix = "\n" if self._streamed else ""
+                self.console.print(
+                    f"{prefix}[dim]→ {name}({arguments}) · running · details: /details {call_id}[/dim]"
+                )
+                self._streamed = False
+            else:
+                self._collapsed_tool_calls[call_id] = _CollapsedToolCall(
+                    call_id=call_id,
+                    tool_name=str(name),
+                    started_at=started_at,
+                )
         elif event.event_type is RuntimeEventType.EXECUTION_CONTROL_ASSESSED:
             required = event.payload.get("required_control")
             if required == "block":
+                self._blocked_tool_calls.add(event.tool_call_id or event.event_id)
                 reasons = event.payload.get("reasons", [])
                 details = []
                 for reason in reasons:
@@ -109,29 +171,67 @@ class TerminalEventSink:
             tool_name = str(event.payload.get("tool_name") or (started[1] if started else "tool"))
             result = str(event.payload.get("result", ""))
             status = "interrupted" if event.payload.get("interrupted") else _tool_status(result)
+            block_was_rendered = call_id in self._blocked_tool_calls
+            self._blocked_tool_calls.discard(call_id)
             style = "yellow" if status in {"interrupted", "not executed"} else ("red" if status in {"error", "denied"} else "green")
-            self.console.print(f"[{style}]← {tool_name}: {status}{elapsed}[/{style}]")
+            if not self.show_full_results and status == "completed":
+                call = self._collapsed_tool_calls.get(call_id)
+                if call is not None:
+                    call.status = status
+                    call.completed_at = time.monotonic()
+                    return
+            self._render_collapsed_tool_calls()
+            self._collapsed_tool_calls.pop(call_id, None)
+            self.console.print(
+                f"[{style}]← {tool_name}: {status}{elapsed} · details: /details {call_id}[/{style}]"
+            )
             if result:
                 if status == "not executed":
-                    self.console.print("[dim]未执行：达到运行限制。[/dim]")
-                elif status in {"error", "denied", "interrupted"} or self.show_full_results or tool_name != "read_file":
+                    self.console.print("[dim]未执行：达到运行限制；详情保留在 Session 中。[/dim]")
+                elif (status in {"error", "denied", "interrupted"} and not block_was_rendered) or self.show_full_results:
                     self.console.print(f"[dim]{_summarize(result, self.result_limit)}[/dim]")
-                else:
-                    self.console.print(
-                        f"[dim]已读取 {len(result)} 个字符；完整内容已折叠（/details on 查看后续完整结果）。[/dim]"
-                    )
         elif event.event_type is RuntimeEventType.CONTEXT_COMPRESSED:
             self.console.print("[dim]Context compressed.[/dim]")
-        elif event.event_type is RuntimeEventType.TURN_COMPLETED and self._streamed:
-            self.console.print()
-            self._streamed = False
+        elif event.event_type is RuntimeEventType.TURN_COMPLETED:
+            self._render_collapsed_tool_calls()
+            if self._streamed:
+                self.console.print()
+                self._streamed = False
         elif event.event_type is RuntimeEventType.TURN_FAILED:
+            self._render_collapsed_tool_calls()
             self.console.print(f"[red]Turn failed: {event.payload.get('error', 'unknown error')}[/red]")
         elif event.event_type is RuntimeEventType.TURN_INTERRUPTED:
+            self._render_collapsed_tool_calls()
             self.console.print("[yellow]Current turn interrupted.[/yellow]")
         elif event.event_type is RuntimeEventType.TURN_LIMIT_REACHED:
+            self._render_collapsed_tool_calls()
             limit = event.payload.get("limit") or "tool-call rounds"
             self.console.print(f"[yellow]Runtime limit reached: {limit}.[/yellow]")
+
+    def _render_collapsed_tool_calls(self) -> None:
+        completed = [
+            call for call in self._collapsed_tool_calls.values()
+            if call.status == "completed" and call.completed_at is not None
+        ]
+        if not completed:
+            return
+        names: list[str] = []
+        for call in completed:
+            if call.tool_name not in names:
+                names.append(call.tool_name)
+        name_summary = "、".join(
+            f"{name} × {sum(call.tool_name == name for call in completed)}" for name in names
+        )
+        started_at = min(call.started_at for call in completed)
+        completed_at = max(call.completed_at for call in completed if call.completed_at is not None)
+        prefix = "\n" if self._streamed else ""
+        self.console.print(
+            f"{prefix}[dim]工具调用已折叠：{name_summary}（{len(completed)} 项完成，"
+            f"{completed_at - started_at:.2f}s）· /details 查看并选择详情[/dim]"
+        )
+        self._streamed = False
+        for call in completed:
+            self._collapsed_tool_calls.pop(call.call_id, None)
 
 
 class ChatSession:
@@ -259,7 +359,9 @@ class ChatSession:
             "/sessions  List recoverable Sessions",
             "/session show [id]  Show Session facts and recovery warnings",
             "/resume <id>  Resume an event Session for this repository",
+            "/details  List saved Tool Calls and choose one to expand",
             "/details [on|off]  Toggle full future Tool Result output",
+            "/details <tool-call-id> [page]  Show one saved Tool Call detail",
             "/exit    Exit Chat",
         ])
         self.console.print(Panel("\n".join(lines), title="FeaturePilot Commands"))
@@ -480,14 +582,95 @@ class ChatSession:
         if not isinstance(terminal_sink, TerminalEventSink):
             self.console.print("[yellow]Tool detail mode is unavailable for this output target.[/yellow]")
             return
+        values = value.split()
         normalized = value.lower()
-        if normalized not in {"", "on", "off"}:
-            self.console.print("[yellow]Usage: /details [on|off][/yellow]")
+        if normalized in {"on", "off"}:
+            if normalized:
+                terminal_sink.show_full_results = normalized == "on"
+            state = "on" if terminal_sink.show_full_results else "off"
+            self.console.print(f"Tool detail mode: [cyan]{state}[/cyan]")
             return
-        if normalized:
-            terminal_sink.show_full_results = normalized == "on"
-        state = "on" if terminal_sink.show_full_results else "off"
-        self.console.print(f"Tool detail mode: [cyan]{state}[/cyan]")
+        if not normalized:
+            self._show_tool_call_list()
+            return
+        if len(values) not in {1, 2}:
+            self.console.print("[yellow]Usage: /details [on|off|<tool-call-id> [page]][/yellow]")
+            return
+        page = 1
+        if len(values) == 2:
+            try:
+                page = int(values[1])
+            except ValueError:
+                self.console.print("[yellow]Page must be a positive integer.[/yellow]")
+                return
+        if page < 1:
+            self.console.print("[yellow]Page must be a positive integer.[/yellow]")
+            return
+        store = getattr(self.runtime, "session_store", None)
+        if store is None:
+            self.console.print("[yellow]Saved Tool Call details are unavailable for this runtime.[/yellow]")
+            return
+        try:
+            projection = store.replay(self.runtime.agent.session_id)
+        except (OSError, ValueError) as error:
+            self.console.print(f"[red]Could not load Tool Call details: {error}[/red]")
+            return
+        detail = _find_tool_call_detail(_tool_call_details(projection.events), values[0])
+        if detail is None:
+            self.console.print(
+                f"[yellow]No saved Tool Call matches {values[0]!r}. Use /details to choose a saved Tool Call.[/yellow]"
+            )
+            return
+        self._show_tool_call_detail(detail, page)
+
+    def _show_tool_call_list(self) -> None:
+        store = getattr(self.runtime, "session_store", None)
+        if store is None:
+            self.console.print("[yellow]Saved Tool Call details are unavailable for this runtime.[/yellow]")
+            return
+        try:
+            projection = store.replay(self.runtime.agent.session_id)
+        except (OSError, ValueError) as error:
+            self.console.print(f"[red]Could not load Tool Call details: {error}[/red]")
+            return
+        details = _tool_call_details(projection.events)
+        if not details:
+            self.console.print("[dim]This Session has no saved Tool Calls.[/dim]")
+            return
+        table = Table(title="折叠的工具调用（/details <id> 展开）")
+        table.add_column("ID", style="cyan")
+        table.add_column("Tool")
+        table.add_column("Status")
+        table.add_column("Duration", justify="right")
+        for detail in details:
+            duration = f"{detail.duration_seconds:.2f}s" if detail.duration_seconds is not None else "-"
+            table.add_row(detail.call_id, detail.tool_name, detail.status, duration)
+        self.console.print(table)
+
+    def _show_tool_call_detail(self, detail: ToolCallDetail, page: int) -> None:
+        body = _format_tool_call_detail(
+            detail,
+            repository=self.runtime.repository,
+            validation_commands=(self.runtime.profile.validation_commands if self.runtime.profile else []),
+        )
+        page_count = max(1, (len(body) + _DETAIL_PAGE_SIZE - 1) // _DETAIL_PAGE_SIZE)
+        if page > page_count:
+            self.console.print(f"[yellow]Page {page} is unavailable; this detail has {page_count} page(s).[/yellow]")
+            return
+        start = (page - 1) * _DETAIL_PAGE_SIZE
+        end = start + _DETAIL_PAGE_SIZE
+        footer = ""
+        if page_count > 1:
+            footer = (
+                f"\n\n[输出已分页：第 {page}/{page_count} 页；"
+                f"完整 Tool Result 已保留在 Session。使用 /details {detail.call_id} <page> 查看其他页。]"
+            )
+        duration = f"{detail.duration_seconds:.2f}s" if detail.duration_seconds is not None else "unknown"
+        self.console.print(Panel(
+            Text(body[start:end] + footer),
+            title=f"Tool details · {detail.tool_name} · {detail.status} · {duration}",
+            border_style=_detail_border_style(detail.status),
+        ))
 
     def _ensure_session_persisted(self) -> None:
         ensure = getattr(self.runtime, "ensure_persisted", None)
@@ -538,6 +721,179 @@ def _brief_arguments(arguments: object, max_length: int = 120) -> str:
     return _summarize(value, max_length)
 
 
+def _tool_call_details(events: list[object]) -> list[ToolCallDetail]:
+    """Rebuild display-only Tool Call details from persisted Runtime Events."""
+
+    details: dict[str, ToolCallDetail] = {}
+    for event in events:
+        event_type = getattr(event, "event_type", "")
+        event_type = getattr(event_type, "value", event_type)
+        call_id = getattr(event, "tool_call_id", None)
+        payload = getattr(event, "payload", {})
+        if not call_id or not isinstance(payload, dict):
+            continue
+        detail = details.get(call_id)
+        if event_type == RuntimeEventType.TOOL_REQUESTED.value:
+            detail = detail or ToolCallDetail(call_id=call_id)
+            detail.tool_name = str(payload.get("tool_name", detail.tool_name))
+            detail.arguments = payload.get("arguments", {})
+            detail.requested_at = getattr(event, "created_at", None)
+            details[call_id] = detail
+        elif event_type == RuntimeEventType.EXECUTION_CONTROL_ASSESSED.value:
+            detail = detail or ToolCallDetail(call_id=call_id)
+            detail.tool_name = str(payload.get("tool_name", detail.tool_name))
+            detail.execution_control = dict(payload)
+            details[call_id] = detail
+        elif event_type == RuntimeEventType.TOOL_COMPLETED.value:
+            detail = detail or ToolCallDetail(call_id=call_id)
+            detail.tool_name = str(payload.get("tool_name", detail.tool_name))
+            detail.result = str(payload.get("result", ""))
+            detail.interrupted = bool(payload.get("interrupted"))
+            detail.completed_at = getattr(event, "created_at", None)
+            details[call_id] = detail
+    return list(details.values())
+
+
+def _find_tool_call_detail(details: list[ToolCallDetail], value: str) -> ToolCallDetail | None:
+    exact = [detail for detail in details if detail.call_id == value]
+    if exact:
+        return exact[-1]
+    matches = [detail for detail in details if detail.call_id.startswith(value)]
+    return matches[-1] if len(matches) == 1 else None
+
+
+def _format_tool_call_detail(
+    detail: ToolCallDetail,
+    *,
+    repository: Path,
+    validation_commands: list[list[str]],
+) -> str:
+    """Format stored facts without rerunning, re-diffing, or mutating a Tool Call."""
+
+    result = detail.result if detail.result is not None else "(Tool Call is still running; no saved result yet.)"
+    duration = f"{detail.duration_seconds:.2f}s" if detail.duration_seconds is not None else "unknown"
+    lines = [
+        f"Tool Call ID: {detail.call_id}",
+        f"Tool: {detail.tool_name}",
+        f"Status: {detail.status}",
+        f"Duration: {duration}",
+    ]
+    arguments = detail.arguments if isinstance(detail.arguments, dict) else {}
+    if detail.tool_name == "bash":
+        command = str(arguments.get("command", ""))
+        stdout, stderr, exit_code = _shell_result_parts(result)
+        lines.extend([
+            "",
+            "Shell:",
+            f"Command: {command or '(missing from saved arguments)'}",
+            f"cwd: {repository}",
+            f"Exit code: {exit_code if exit_code is not None else ('cancelled' if detail.interrupted else '0 or unavailable')}",
+            "stdout:",
+            stdout,
+            "stderr:",
+            stderr or "(none)",
+        ])
+        if _is_validation_command(command, validation_commands):
+            validation_status = "passed" if detail.status == "completed" else "failed"
+            lines.extend(["", f"Validation: {validation_status}"])
+    elif detail.tool_name in {"edit_file", "write_file"}:
+        summary, trusted_diff = _split_result_summary(result)
+        lines.extend([
+            "",
+            "File operation:",
+            f"Path: {arguments.get('file_path', '(missing from saved arguments)')}",
+            f"Change summary: {summary}",
+            "Permission / Trusted Diff:",
+            _permission_detail(detail),
+            "Diff:",
+            trusted_diff or "(No trusted diff was returned; the operation may have been denied, failed, or made no change.)",
+        ])
+    else:
+        lines.extend([
+            "",
+            "Arguments:",
+            _format_arguments(arguments),
+            "Result:",
+            result,
+        ])
+
+    if detail.execution_control is not None:
+        lines.extend(["", "Execution Control:", _format_execution_control(detail.execution_control)])
+    elif detail.status in {"denied", "interrupted", "error", "not executed"}:
+        lines.extend(["", "Result detail:", result])
+    return "\n".join(lines)
+
+
+def _format_execution_control(payload: dict[str, object]) -> str:
+    required = payload.get("required_control", "unknown")
+    summary = payload.get("normalized_summary")
+    lines = [f"Control: {required}"]
+    if summary is not None:
+        lines.extend(["Normalized request:", _format_arguments(summary)])
+    reasons = payload.get("reasons", [])
+    if isinstance(reasons, list) and reasons:
+        lines.append("Reasons and evidence:")
+        for reason in reasons:
+            if not isinstance(reason, dict):
+                continue
+            evidence = reason.get("evidence", [])
+            evidence_text = "；".join(str(item) for item in evidence) if isinstance(evidence, list) else str(evidence)
+            lines.append(f"- {reason.get('message', 'control rule')}：{evidence_text or '(none)'}")
+    return "\n".join(lines)
+
+
+def _permission_detail(detail: ToolCallDetail) -> str:
+    result = detail.result or ""
+    if detail.status == "denied":
+        return f"Denied: {result}"
+    if detail.status in {"error", "interrupted", "not executed"}:
+        return f"Not completed: {detail.status}. {result}"
+    return "Completed. The saved Tool Result below contains the Trusted Diff reviewed for this write."
+
+
+def _format_arguments(arguments: object) -> str:
+    try:
+        return json.dumps(arguments, ensure_ascii=False, indent=2, default=str)
+    except (TypeError, ValueError):
+        return repr(arguments)
+
+
+def _shell_result_parts(result: str) -> tuple[str, str, int | None]:
+    exit_match = re.search(r"(?:\n|^)\[exit code: (-?\d+)\]\s*$", result)
+    exit_code = int(exit_match.group(1)) if exit_match else None
+    output = result[:exit_match.start()] if exit_match else result
+    stdout, separator, stderr = output.partition("\n[stderr]\n")
+    return stdout or "(no output)", stderr if separator else "", exit_code
+
+
+def _split_result_summary(result: str) -> tuple[str, str]:
+    summary, separator, remainder = result.partition("\n")
+    return summary or "(no summary)", remainder if separator else ""
+
+
+def _is_validation_command(command: str, validation_commands: list[list[str]]) -> bool:
+    return command in {" ".join(parts) for parts in validation_commands}
+
+
+def _as_datetime(value: str | datetime | None) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _detail_border_style(status: str) -> str:
+    if status in {"error", "denied"}:
+        return "red"
+    if status in {"interrupted", "not executed", "running"}:
+        return "yellow"
+    return "green"
+
+
 def _summarize(value: str, limit: int) -> str:
     normalized = value.strip()
     if len(normalized) <= limit:
@@ -554,6 +910,8 @@ def _tool_status(result: str) -> str:
     if lowered.startswith(("policy denied", "permission denied", "⚠ blocked")):
         return "denied"
     if lowered.startswith("error") or "[exit code:" in lowered:
+        return "error"
+    if re.search(r"(?:^|\n)\[exit code: -?[1-9]\d*\]\s*$", lowered):
         return "error"
     return "completed"
 

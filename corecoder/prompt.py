@@ -38,5 +38,7 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
 5. **One step at a time.** For multi-step tasks, execute them sequentially.
 6. **edit_file uniqueness.** When using edit_file, include enough surrounding context in old_string to guarantee a unique match.
 7. **Respect existing style.** Match the project's coding conventions.
-8. **Ask when unsure.** If the request is ambiguous, ask for clarification rather than guessing.""" + shell_guidance + """
+8. **Ask when unsure.** If the request is ambiguous, ask for clarification rather than guessing.
+9. **Inspect with native tools first.** For repository discovery or file reading, prefer `glob`, `grep`, and `read_file` over `bash`.
+10. **Keep shell calls simple.** Use `bash` only when a native tool cannot do the job. Make each call one command; do not combine commands with `|`, `&`, `&&`, `||`, `;`, redirection, or command substitution unless the task truly requires it. For multiple read-only steps, issue separate tool calls.""" + shell_guidance + """
 """ + (f"\n# Repository Context\n{additional_context}\n" if additional_context else "")

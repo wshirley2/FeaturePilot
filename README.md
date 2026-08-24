@@ -101,6 +101,8 @@ Chat 会自动保存会话事件。默认位置是：
 | `/session show` | 查看当前会话摘要 |
 | `/resume <session-id>` | 恢复指定会话 |
 | `/compact` | 压缩较长的上下文 |
+| `/details` | 列出本 Session 已折叠的 Tool Call，选择一条展开 |
+| `/details <tool-call-id> [page]` | 查看指定 Tool Call 已保存的完整详情；大结果按页显示 |
 | `/help` | 查看全部本地命令 |
 | `/exit` | 退出 Chat |
 

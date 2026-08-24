@@ -2,6 +2,7 @@
 
 import os
 import sys
+from types import SimpleNamespace
 
 from corecoder.tools import ALL_TOOLS, get_tool
 
@@ -135,6 +136,25 @@ def test_bash_truncates_long_output():
     bash = get_tool("bash")
     r = bash.execute(command=f'"{sys.executable}" -c "print(\'x\' * 20000)"')
     assert "truncated" in r
+
+
+def test_bash_uses_the_local_command_output_encoding(monkeypatch, tmp_path):
+    import corecoder.tools.bash as bash_mod
+
+    captured = {}
+
+    def fake_run(*_args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=1, stdout="", stderr="找不到文件")
+
+    monkeypatch.setattr(bash_mod.locale, "getpreferredencoding", lambda _do_setlocale: "cp936")
+    monkeypatch.setattr(bash_mod.subprocess, "run", fake_run)
+
+    result = bash_mod.BashTool().execute_in("dir missing", cwd=str(tmp_path))
+
+    assert captured["text"] is True
+    assert captured["encoding"] == "cp936"
+    assert "找不到文件" in result
 
 
 # --- read_file ---

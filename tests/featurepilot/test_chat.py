@@ -81,6 +81,277 @@ def test_limit_backfilled_read_file_is_rendered_as_not_executed():
     assert "未执行：达到运行限制" in rendered
 
 
+def test_block_reason_is_rendered_once_but_the_denied_detail_stays_available():
+    output = StringIO()
+    sink = TerminalEventSink(Console(file=output, force_terminal=False, color_system=None))
+    event_args = {
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+        "round_index": 1,
+        "tool_call_id": "blocked-shell",
+    }
+    result = "Policy denied bash: 该操作已被阻断，未执行。原因与证据：unsafe shell structure"
+
+    sink.emit(RuntimeEvent(
+        event_type=RuntimeEventType.TOOL_REQUESTED,
+        payload={"tool_name": "bash", "arguments": {"command": "dir /b 2>nul & dir /b"}},
+        **event_args,
+    ))
+    sink.emit(RuntimeEvent(
+        event_type=RuntimeEventType.EXECUTION_CONTROL_ASSESSED,
+        payload={
+            "required_control": "block",
+            "reasons": [{"message": "unsafe shell structure", "evidence": ["redirection"]}],
+        },
+        **event_args,
+    ))
+    sink.emit(RuntimeEvent(
+        event_type=RuntimeEventType.TOOL_COMPLETED,
+        payload={"tool_name": "bash", "result": result, "interrupted": False},
+        **event_args,
+    ))
+
+    rendered = output.getvalue()
+    assert "操作已阻断" in rendered
+    assert "unsafe shell structure：redirection" in rendered
+    assert "← bash: denied" in rendered
+    assert "details: /details blocked-shell" in rendered
+    assert "Policy denied bash" not in rendered
+
+
+def test_tool_result_summary_is_grouped_until_the_user_chooses_a_detail():
+    output = StringIO()
+    sink = TerminalEventSink(Console(file=output, force_terminal=False, color_system=None))
+    event_args = {
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+        "round_index": 1,
+        "tool_call_id": "shell-compact",
+    }
+    full_output = "private command output\n" * 400
+
+    sink.emit(RuntimeEvent(
+        event_type=RuntimeEventType.TOOL_REQUESTED,
+        payload={"tool_name": "bash", "arguments": {"command": "python -m pytest -q"}},
+        **event_args,
+    ))
+    sink.emit(RuntimeEvent(
+        event_type=RuntimeEventType.TOOL_COMPLETED,
+        payload={"tool_name": "bash", "result": full_output, "interrupted": False},
+        **event_args,
+    ))
+    sink.emit(RuntimeEvent(
+        event_type=RuntimeEventType.TURN_COMPLETED,
+        payload={},
+        **event_args,
+    ))
+
+    rendered = output.getvalue()
+    assert "工具调用已折叠：bash × 1（1 项完成" in rendered
+    assert "/details 查看并选择详情" in rendered
+    assert "bash(command='python -m pytest -q') · running" not in rendered
+    assert "← bash: completed" not in rendered
+    assert full_output not in rendered
+
+
+def test_completed_tool_calls_share_one_collapsed_turn_summary():
+    output = StringIO()
+    sink = TerminalEventSink(Console(file=output, force_terminal=False, color_system=None))
+    for call_id, tool_name, arguments, result in (
+        ("shell-1", "bash", {"command": "dir /b"}, ".featurepilot"),
+        ("glob-1", "glob", {"pattern": "**/*.py"}, "a.py\nb.py"),
+    ):
+        event_args = {
+            "session_id": "session-1",
+            "turn_id": "turn-1",
+            "round_index": 1,
+            "tool_call_id": call_id,
+        }
+        sink.emit(RuntimeEvent(
+            event_type=RuntimeEventType.TOOL_REQUESTED,
+            payload={"tool_name": tool_name, "arguments": arguments},
+            **event_args,
+        ))
+        sink.emit(RuntimeEvent(
+            event_type=RuntimeEventType.TOOL_COMPLETED,
+            payload={"tool_name": tool_name, "result": result, "interrupted": False},
+            **event_args,
+        ))
+    sink.emit(RuntimeEvent(
+        event_type=RuntimeEventType.TURN_COMPLETED,
+        payload={},
+        session_id="session-1",
+        turn_id="turn-1",
+        round_index=1,
+    ))
+
+    rendered = output.getvalue()
+    assert rendered.count("工具调用已折叠：") == 1
+    assert "bash × 1、glob × 1（2 项完成" in rendered
+    assert "shell-1" not in rendered
+    assert "glob-1" not in rendered
+
+
+def test_details_on_keeps_per_call_tool_output_compatibility():
+    output = StringIO()
+    sink = TerminalEventSink(Console(file=output, force_terminal=False, color_system=None))
+    sink.show_full_results = True
+    event_args = {
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+        "round_index": 1,
+        "tool_call_id": "shell-full",
+    }
+
+    sink.emit(RuntimeEvent(
+        event_type=RuntimeEventType.TOOL_REQUESTED,
+        payload={"tool_name": "bash", "arguments": {"command": "dir /b"}},
+        **event_args,
+    ))
+    sink.emit(RuntimeEvent(
+        event_type=RuntimeEventType.TOOL_COMPLETED,
+        payload={"tool_name": "bash", "result": ".featurepilot", "interrupted": False},
+        **event_args,
+    ))
+
+    rendered = output.getvalue()
+    assert "bash(command='dir /b') · running" in rendered
+    assert "← bash: completed" in rendered
+    assert ".featurepilot" in rendered
+    assert "工具调用已折叠" not in rendered
+
+
+def test_details_reads_saved_shell_control_validation_and_file_diff_without_execution(tmp_path):
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    sink = TerminalEventSink(console)
+    store = SessionStore(tmp_path / "sessions")
+    session_id = "saved-details"
+    store.create(session_id, repository_root=tmp_path, model="fake-model")
+    store.append(SessionEvent(
+        event_type="tool_requested",
+        session_id=session_id,
+        turn_id="turn-1",
+        round_index=1,
+        tool_call_id="shell-1",
+        payload={"tool_name": "bash", "arguments": {"command": "python -m pytest -q"}},
+    ))
+    store.append(SessionEvent(
+        event_type="execution_control_assessed",
+        session_id=session_id,
+        turn_id="turn-1",
+        round_index=1,
+        tool_call_id="shell-1",
+        payload={
+            "tool_name": "bash",
+            "required_control": "confirm",
+            "normalized_summary": {"command": "python -m pytest -q"},
+            "reasons": [{"message": "General command", "evidence": ["command_kind=general"]}],
+        },
+    ))
+    store.append(SessionEvent(
+        event_type="tool_completed",
+        session_id=session_id,
+        turn_id="turn-1",
+        round_index=1,
+        tool_call_id="shell-1",
+        payload={
+            "tool_name": "bash",
+            "result": "failed test\n[stderr]\ntraceback\n[exit code: 3]",
+            "interrupted": False,
+        },
+    ))
+    store.append(SessionEvent(
+        event_type="tool_requested",
+        session_id=session_id,
+        turn_id="turn-2",
+        round_index=1,
+        tool_call_id="write-1",
+        payload={"tool_name": "write_file", "arguments": {"file_path": "app.py", "content": "after\n"}},
+    ))
+    store.append(SessionEvent(
+        event_type="tool_completed",
+        session_id=session_id,
+        turn_id="turn-2",
+        round_index=1,
+        tool_call_id="write-1",
+        payload={
+            "tool_name": "write_file",
+            "result": "Wrote 1 lines to app.py\n--- a/app.py\n+++ b/app.py\n@@\n-before\n+after\n",
+            "interrupted": False,
+        },
+    ))
+    runtime = SimpleNamespace(
+        agent=SimpleNamespace(event_sink=sink, session_id=session_id),
+        session_store=store,
+        repository=tmp_path,
+        profile=SimpleNamespace(validation_commands=[["python", "-m", "pytest", "-q"]]),
+    )
+    session = ChatSession(runtime, console=console)
+
+    session._details("shell-1")
+    session._details("write-1")
+    session._details("")
+
+    rendered = output.getvalue()
+    assert "Command: python -m pytest -q" in rendered
+    assert "cwd:" in rendered
+    assert "Exit code: 3" in rendered
+    assert "stdout:" in rendered
+    assert "failed test" in rendered
+    assert "stderr:" in rendered
+    assert "traceback" in rendered
+    assert "Validation: failed" in rendered
+    assert "Control: confirm" in rendered
+    assert "General command：command_kind=general" in rendered
+    assert "Path: app.py" in rendered
+    assert "Change summary: Wrote 1 lines to app.py" in rendered
+    assert "--- a/app.py" in rendered
+    assert "Completed. The saved Tool Result below contains the Trusted Diff" in rendered
+    assert "折叠的工具调用" in rendered
+    assert "shell-1" in rendered
+    assert "write-1" in rendered
+    assert store.replay(session_id).events[-1].payload["result"].endswith("+after\n")
+
+
+def test_details_pages_saved_large_results_and_keeps_detail_mode_compatibility(tmp_path):
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    sink = TerminalEventSink(console)
+    store = SessionStore(tmp_path / "sessions")
+    session_id = "paged-details"
+    store.create(session_id, repository_root=tmp_path, model="fake-model")
+    large_result = "x" * 16_100
+    for event_type, payload in (
+        ("tool_requested", {"tool_name": "read_file", "arguments": {"file_path": "large.txt"}}),
+        ("tool_completed", {"tool_name": "read_file", "result": large_result, "interrupted": False}),
+    ):
+        store.append(SessionEvent(
+            event_type=event_type,
+            session_id=session_id,
+            turn_id="turn-1",
+            round_index=1,
+            tool_call_id="read-large",
+            payload=payload,
+        ))
+    runtime = SimpleNamespace(
+        agent=SimpleNamespace(event_sink=sink, session_id=session_id),
+        session_store=store,
+        repository=tmp_path,
+        profile=None,
+    )
+    session = ChatSession(runtime, console=console)
+
+    session._details("on")
+    session._details("read-large 2")
+
+    rendered = output.getvalue()
+    assert sink.show_full_results
+    assert "Tool detail mode: on" in rendered
+    assert "输出已分页：第 2/3 页" in rendered
+    assert store.replay(session_id).events[-1].payload["result"] == large_result
+
+
 class FakeProvider:
     model = "fake-coder"
     total_prompt_tokens = 12
@@ -248,7 +519,7 @@ def test_chat_read_only_inspects_benchmark_without_modifying_files(tmp_path, mon
     assert ChatSession(runtime, console=console, input_fn=lambda prompt: next(inputs)).run() == 0
 
     assert (repository / read_path).read_bytes() == original
-    assert "← read_file: completed" in output.getvalue()
+    assert "工具调用已折叠：read_file × 1（1 项完成" in output.getvalue()
     assert len(provider.requests) == 2
 
 
@@ -268,7 +539,7 @@ def test_chat_reads_dependency_manifest_directly_without_prompting_or_isolating(
     assert ChatSession(runtime, console=console, input_fn=lambda prompt: next(inputs)).run() == 0
 
     rendered = output.getvalue()
-    assert "← read_file: completed" in rendered
+    assert "工具调用已折叠：read_file × 1（1 项完成" in rendered
     assert "需要隔离执行" not in rendered
     assert prompt.requests == []
 
@@ -290,7 +561,7 @@ def test_chat_directory_listing_command_executes_directly_without_prompting(tmp_
     assert ChatSession(runtime, console=console, input_fn=lambda prompt: next(inputs)).run() == 0
 
     rendered = output.getvalue()
-    assert "← bash: completed" in rendered
+    assert "工具调用已折叠：bash × 1（1 项完成" in rendered
     assert prompt.requests == []
 
 
@@ -342,10 +613,9 @@ def test_chat_end_to_end_reads_edits_validates_and_continues_without_network(tmp
     assert new in (repository / read_path).read_text(encoding="utf-8")
     rendered = output.getvalue()
     assert "FeaturePilot Chat" in rendered
-    assert "→ read_file" in rendered
-    assert "← edit_file: completed" in rendered
-    assert "← bash: completed" in rendered
-    assert "3 passed" in rendered
+    assert "工具调用已折叠：read_file × 1、edit_file × 1、bash × 1（3 项完成" in rendered
+    assert "→ read_file" not in rendered
+    assert "← edit_file: completed" not in rendered
     assert "修改和测试已经完成。" in rendered
     assert "我还记得刚才的修改。" in rendered
     assert len(provider.requests) == 5

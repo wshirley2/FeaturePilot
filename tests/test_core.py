@@ -7,6 +7,16 @@ from corecoder.session import list_sessions, load_session, save_session
 from corecoder.tools import get_tool
 
 
+def test_system_prompt_prefers_native_read_tools_and_simple_shell_calls():
+    from corecoder.prompt import system_prompt
+
+    prompt = system_prompt([])
+
+    assert "prefer `glob`, `grep`, and `read_file` over `bash`" in prompt
+    assert "Make each call one command" in prompt
+    assert "For multiple read-only steps, issue separate tool calls" in prompt
+
+
 def test_version():
     assert __version__ == "0.4.0"
 
