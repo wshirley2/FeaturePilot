@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from corecoder.agent import Agent, ToolExecutor
-from corecoder.config import Config
+from corecoder.config import Config, default_context_tokens_for_model
 from corecoder.events import EventSink
 from corecoder.llm import LLM, LiteLLM
 from corecoder.permissions import DenyPermissionPrompt, PermissionManager, PermissionPrompt
@@ -132,6 +132,9 @@ class TaskRuntime:
         """Update both the provider configuration and model-visible runtime facts."""
 
         self.config.model = model
+        if "CORECODER_MAX_CONTEXT" not in os.environ:
+            self.config.max_context_tokens = default_context_tokens_for_model(model)
+            self.agent.context.max_tokens = self.config.max_context_tokens
         if hasattr(self.agent.llm, "model"):
             self.agent.llm.model = model
         self.agent.update_system_context(_with_runtime_identity(self.base_system_context, self.mode, model))
@@ -260,6 +263,11 @@ class RuntimeBootstrap:
                 raise ValueError("Session belongs to a different Runtime mode")
             if resume_projection.model and not inputs.model:
                 config.model = resume_projection.model
+
+        # Recalculate the provider window after CLI, environment, and session
+        # model overrides unless the user explicitly pins the context size.
+        if "CORECODER_MAX_CONTEXT" not in os.environ:
+            config.max_context_tokens = default_context_tokens_for_model(config.model)
 
         provider = self._build_provider(config)
         repository_context = _repository_summary(profile, profile_warning)

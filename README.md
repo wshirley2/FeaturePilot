@@ -24,10 +24,12 @@ python -m pip install -e ".[dev]"
 ```dotenv
 OPENAI_API_KEY=你的密钥
 OPENAI_BASE_URL=https://api.deepseek.com
-FEATUREPILOT_MODEL=deepseek-chat
+FEATUREPILOT_MODEL=deepseek-v4-flash
 ```
 
-FeaturePilot 使用 OpenAI 兼容接口，也可以通过 `--api-key`、`--base-url` 和 `-m` 临时覆盖这些配置。
+这里的模型名会原样显示在 Chat 和 `/status` 中。当前 DeepSeek 配置可使用
+`deepseek-v4-flash` 或 `deepseek-v4-pro`；也可以通过 `--api-key`、`--base-url`
+和 `-m` 临时覆盖这些配置。
 
 安装成功后，直接把仓库路径交给它：
 

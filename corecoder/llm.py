@@ -68,6 +68,9 @@ _PRICING = {
     # DeepSeek
     "deepseek-chat": (0.27, 1.10),
     "deepseek-reasoner": (0.55, 2.19),
+    # DeepSeek V4 (USD per million tokens; cache-hit input is not separated here)
+    "deepseek-v4-flash": (0.14, 0.28),
+    "deepseek-v4-pro": (0.435, 0.87),
     # Anthropic Claude
     "claude-opus-4-6": (5, 25),
     "claude-sonnet-4-6": (3, 15),

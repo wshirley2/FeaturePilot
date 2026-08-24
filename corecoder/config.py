@@ -4,6 +4,18 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+_DEFAULT_CONTEXT_TOKENS = 128_000
+_MODEL_CONTEXT_TOKENS = {
+    "deepseek-v4-pro": 1_000_000,
+    "deepseek-v4-flash": 1_000_000,
+}
+
+
+def default_context_tokens_for_model(model: str) -> int:
+    """Return the known provider window, with a conservative generic fallback."""
+
+    return _MODEL_CONTEXT_TOKENS.get(model, _DEFAULT_CONTEXT_TOKENS)
+
 
 def _load_dotenv():
     """Load .env from cwd, walking up to home dir. No-op if python-dotenv missing."""
@@ -32,7 +44,7 @@ class Config:
     base_url: str | None = None
     max_tokens: int = 4096
     temperature: float = 0.0
-    max_context_tokens: int = 128_000
+    max_context_tokens: int = _DEFAULT_CONTEXT_TOKENS
     provider: str = "openai"
 
     @classmethod
@@ -49,12 +61,18 @@ class Config:
             or os.getenv("DEEPSEEK_API_KEY")
             or ""
         )
+        model = os.getenv("CORECODER_MODEL", "gpt-5.5")
+        configured_context = os.getenv("CORECODER_MAX_CONTEXT")
         return cls(
-            model=os.getenv("CORECODER_MODEL", "gpt-5.5"),
+            model=model,
             api_key=api_key,
             base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("CORECODER_BASE_URL"),
             max_tokens=int(os.getenv("CORECODER_MAX_TOKENS", "4096")),
             temperature=float(os.getenv("CORECODER_TEMPERATURE", "0")),
-            max_context_tokens=int(os.getenv("CORECODER_MAX_CONTEXT", "128000")),
+            max_context_tokens=(
+                int(configured_context)
+                if configured_context is not None
+                else default_context_tokens_for_model(model)
+            ),
             provider=os.getenv("CORECODER_PROVIDER", "openai"),
         )

@@ -37,6 +37,16 @@ def test_config_defaults(monkeypatch):
     assert c.temperature == 0.0
 
 
+def test_config_uses_model_context_default_and_explicit_override(monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("CORECODER_MODEL", "deepseek-v4-pro")
+    monkeypatch.delenv("CORECODER_MAX_CONTEXT", raising=False)
+    assert Config.from_env().max_context_tokens == 1_000_000
+
+    monkeypatch.setenv("CORECODER_MAX_CONTEXT", "64000")
+    assert Config.from_env().max_context_tokens == 64000
+
+
 # --- Context ---
 
 def test_estimate_tokens():
@@ -141,6 +151,16 @@ def test_cost_estimation_known_model():
     cost = llm.estimated_cost
     assert cost is not None
     assert cost == 2.5 + 7.5  # $2.5/M in + $15/M out * 0.5M
+
+
+def test_cost_estimation_deepseek_v4_model():
+    from corecoder.llm import LLM
+
+    llm = LLM.__new__(LLM)
+    llm.model = "deepseek-v4-pro"
+    llm.total_prompt_tokens = 1_000_000
+    llm.total_completion_tokens = 1_000_000
+    assert llm.estimated_cost == 0.435 + 0.87
 
 def test_cost_estimation_unknown_model():
     from corecoder.llm import LLM

@@ -175,6 +175,7 @@ def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(tm
 
 def test_featurepilot_model_setting_overrides_legacy_config_but_not_cli(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.delenv("CORECODER_MAX_CONTEXT", raising=False)
     monkeypatch.setenv("CORECODER_MODEL", "legacy-corecoder-model")
     monkeypatch.delenv("FEATUREPILOT_MODEL", raising=False)
     console = Console(file=StringIO(), force_terminal=False, color_system=None)
@@ -194,6 +195,12 @@ def test_featurepilot_model_setting_overrides_legacy_config_but_not_cli(tmp_path
     monkeypatch.setenv("FEATUREPILOT_MODEL", "featurepilot-model")
     assert build().config.model == "featurepilot-model"
     assert build("command-line-model").config.model == "command-line-model"
+
+    monkeypatch.setenv("FEATUREPILOT_MODEL", "deepseek-v4-flash")
+    runtime = build()
+    assert runtime.config.max_context_tokens == 1_000_000
+    runtime.set_model("deepseek-v4-pro")
+    assert runtime.config.max_context_tokens == 1_000_000
 
 
 def test_repository_executor_denies_paths_outside_repository(tmp_path):
