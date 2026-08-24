@@ -13,6 +13,7 @@ import concurrent.futures
 import copy
 import inspect
 import time
+from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -31,6 +32,31 @@ class ToolExecutor(Protocol):
 
     def execute(self, tool: Tool, arguments: dict[str, Any]) -> str:
         """Execute one validated Tool request and return its text result."""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionContext:
+    """Correlation facts an application executor may use before a Tool effect."""
+
+    session_id: str
+    turn_id: str
+    round_index: int
+    event_sink: EventSink
+
+    def emit(self, event_type: RuntimeEventType, *, tool_call_id: str, payload: dict[str, Any]) -> None:
+        """Emit an executor fact without allowing an observer failure to alter execution."""
+
+        try:
+            self.event_sink.emit(RuntimeEvent(
+                event_type=event_type,
+                session_id=self.session_id,
+                turn_id=self.turn_id,
+                round_index=self.round_index,
+                tool_call_id=tool_call_id,
+                payload=payload,
+            ))
+        except Exception:
+            pass
 
 
 class Agent:
@@ -436,7 +462,7 @@ class Agent:
             on_tool(tc.name, tc.arguments)
 
     def _exec_tool_with_event(self, tc, turn_id: str, round_index: int) -> str:
-        result = self._exec_tool(tc)
+        result = self._exec_tool(tc, turn_id=turn_id, round_index=round_index)
         self._emit_event(
             RuntimeEventType.TOOL_COMPLETED,
             turn_id,
@@ -446,7 +472,7 @@ class Agent:
         )
         return result
 
-    def _exec_tool(self, tc) -> str:
+    def _exec_tool(self, tc, *, turn_id: str | None = None, round_index: int = 0) -> str:
         """Execute a single tool call, returning the result string."""
         tool = self._tool_by_name.get(tc.name)
         if tool is None:
@@ -461,11 +487,15 @@ class Agent:
             if self.tool_executor is not None:
                 execute_call = getattr(self.tool_executor, "execute_call", None)
                 if execute_call is not None:
-                    return execute_call(
-                        tool,
-                        dict(tc.arguments),
-                        tool_call_id=tc.id,
-                    )
+                    kwargs: dict[str, Any] = {"tool_call_id": tc.id}
+                    if "execution_context" in inspect.signature(execute_call).parameters and turn_id is not None:
+                        kwargs["execution_context"] = ToolExecutionContext(
+                            session_id=self.session_id,
+                            turn_id=turn_id,
+                            round_index=round_index,
+                            event_sink=self.event_sink,
+                        )
+                    return execute_call(tool, dict(tc.arguments), **kwargs)
                 return self.tool_executor.execute(tool, dict(tc.arguments))
             return tool.execute(**tc.arguments)
         except Exception as e:
@@ -500,7 +530,10 @@ class Agent:
                 on_tool(tc.name, tc.arguments)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [pool.submit(self._exec_tool, tc) for tc in tool_calls]
+            futures = [
+                pool.submit(self._exec_tool, tc, turn_id=turn_id, round_index=round_index)
+                for tc in tool_calls
+            ]
             results = [future.result() for future in futures]
 
         # Keep completion events in provider order, matching the Tool Result

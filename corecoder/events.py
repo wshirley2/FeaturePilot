@@ -17,6 +17,7 @@ class RuntimeEventType(str, Enum):
     PROVIDER_STARTED = "provider_started"
     ASSISTANT_TOKEN = "assistant_token"
     TOOL_REQUESTED = "tool_requested"
+    EXECUTION_CONTROL_ASSESSED = "execution_control_assessed"
     TOOL_COMPLETED = "tool_completed"
     CONTEXT_COMPRESSED = "context_compressed"
     TURN_COMPLETED = "turn_completed"

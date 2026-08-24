@@ -79,6 +79,7 @@ class CommandKind(str, Enum):
     TEST = "test"
     LINT = "lint"
     READ_ONLY_GIT = "read_only_git"
+    READ_ONLY_SHELL = "read_only_shell"
     GENERAL = "general"
     FORMAT = "format"
     CODE_GENERATION = "code_generation"
@@ -103,6 +104,7 @@ class ControlReasonCode(str, Enum):
     REPOSITORY_SEARCH = "repository_search"
     SAFE_TEST_OR_LINT = "safe_test_or_lint"
     READ_ONLY_GIT = "read_only_git"
+    READ_ONLY_SHELL = "read_only_shell"
     SINGLE_FILE_WRITE = "single_file_write"
     GENERAL_COMMAND = "general_command"
     NETWORK_EFFECT = "network_effect"
@@ -299,28 +301,34 @@ class ExecutionControlPolicy:
 
     def _isolate_reasons(self, request: NormalizedToolRequest) -> list[ControlReason]:
         reasons: list[ControlReason] = []
-        if request.impact_scope is ImpactScope.MULTI_FILE:
+        file_change = request.operation in {
+            OperationKind.WRITE,
+            OperationKind.DELETE,
+            OperationKind.MOVE,
+            OperationKind.RENAME,
+        }
+        if file_change and request.impact_scope is ImpactScope.MULTI_FILE:
             reasons.append(self._reason(
                 ControlReasonCode.MULTI_FILE_SCOPE,
                 RequiredControl.ISOLATE,
                 "Operation affects multiple files",
                 f"paths={self._paths_evidence(request)}",
             ))
-        if request.impact_scope is ImpactScope.DIRECTORY:
+        if file_change and request.impact_scope is ImpactScope.DIRECTORY:
             reasons.append(self._reason(
                 ControlReasonCode.DIRECTORY_SCOPE,
                 RequiredControl.ISOLATE,
                 "Operation affects a directory scope",
                 f"paths={self._paths_evidence(request)}",
             ))
-        if request.impact_scope is ImpactScope.UNKNOWN:
+        if file_change and request.impact_scope is ImpactScope.UNKNOWN:
             reasons.append(self._reason(
                 ControlReasonCode.UNKNOWN_SCOPE,
                 RequiredControl.ISOLATE,
                 "Operation impact scope is unknown",
                 f"tool={request.tool_name}",
             ))
-        if request.reversibility in {Reversibility.DESTRUCTIVE, Reversibility.UNKNOWN}:
+        if file_change and request.reversibility in {Reversibility.DESTRUCTIVE, Reversibility.UNKNOWN}:
             reasons.append(self._reason(
                 ControlReasonCode.DESTRUCTIVE_OPERATION,
                 RequiredControl.ISOLATE,
@@ -342,21 +350,22 @@ class ExecutionControlPolicy:
                 f"operation={request.operation.value}",
                 f"paths={self._paths_evidence(request)}",
             ))
-        for category, code, label in (
-            (FileCategory.DEPENDENCY_MANIFEST, ControlReasonCode.DEPENDENCY_MANIFEST, "dependency manifest"),
-            (FileCategory.LOCK_FILE, ControlReasonCode.LOCK_FILE, "lock file"),
-            (FileCategory.DATABASE_MIGRATION, ControlReasonCode.DATABASE_MIGRATION, "database migration"),
-            (FileCategory.DEPLOYMENT_CONFIG, ControlReasonCode.DEPLOYMENT_CONFIG, "deployment config"),
-            (FileCategory.CI_CONFIG, ControlReasonCode.CI_CONFIG, "CI config"),
-        ):
-            if category in request.file_categories:
-                reasons.append(self._reason(
-                    code,
-                    RequiredControl.ISOLATE,
-                    f"Operation modifies a {label}",
-                    f"file_category={category.value}",
-                    f"paths={self._paths_evidence(request)}",
-                ))
+        if file_change:
+            for category, code, label in (
+                (FileCategory.DEPENDENCY_MANIFEST, ControlReasonCode.DEPENDENCY_MANIFEST, "dependency manifest"),
+                (FileCategory.LOCK_FILE, ControlReasonCode.LOCK_FILE, "lock file"),
+                (FileCategory.DATABASE_MIGRATION, ControlReasonCode.DATABASE_MIGRATION, "database migration"),
+                (FileCategory.DEPLOYMENT_CONFIG, ControlReasonCode.DEPLOYMENT_CONFIG, "deployment config"),
+                (FileCategory.CI_CONFIG, ControlReasonCode.CI_CONFIG, "CI config"),
+            ):
+                if category in request.file_categories:
+                    reasons.append(self._reason(
+                        code,
+                        RequiredControl.ISOLATE,
+                        f"Operation modifies a {label}",
+                        f"file_category={category.value}",
+                        f"paths={self._paths_evidence(request)}",
+                    ))
         command = request.command
         if command and command.kind is CommandKind.FORMAT and command.has_fix:
             reasons.append(self._reason(
@@ -429,6 +438,13 @@ class ExecutionControlPolicy:
                     ControlReasonCode.READ_ONLY_GIT,
                     RequiredControl.DIRECT,
                     "Read-only Git command can execute directly",
+                    f"command={command.display}",
+                )]
+            if command.kind is CommandKind.READ_ONLY_SHELL:
+                return [self._reason(
+                    ControlReasonCode.READ_ONLY_SHELL,
+                    RequiredControl.DIRECT,
+                    "Read-only shell command can execute directly",
                     f"command={command.display}",
                 )]
         return []

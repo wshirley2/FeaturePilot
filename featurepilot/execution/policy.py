@@ -129,7 +129,7 @@ class ToolPolicy:
             return path
         if not path.is_file():
             return self._deny(ToolEffect.WRITE, "edit_file may only modify an existing Workspace file")
-        if not self._is_in_plan(path, context.plan.modify_files, context):
+        if not self._is_in_plan(path, context.modify_files, context):
             return self._deny(ToolEffect.WRITE, "Path is not in the approved Plan modify_files list")
         normalized = dict(arguments)
         normalized["file_path"] = str(path)
@@ -139,8 +139,8 @@ class ToolPolicy:
         path = self._path_argument("write_file", arguments, "file_path", context)
         if isinstance(path, PolicyDecision):
             return path
-        in_modify_files = self._is_in_plan(path, context.plan.modify_files, context)
-        in_expected_files = self._is_in_plan(path, context.plan.expected_files, context)
+        in_modify_files = self._is_in_plan(path, context.modify_files, context)
+        in_expected_files = self._is_in_plan(path, context.expected_files, context)
         if not in_modify_files and not in_expected_files:
             return self._deny(ToolEffect.WRITE, "Path is not in the approved Plan write scope")
         if in_expected_files and not in_modify_files and path.exists():
@@ -153,7 +153,7 @@ class ToolPolicy:
         command = arguments.get("command")
         if not isinstance(command, str):
             return self._deny(ToolEffect.EXECUTE, "bash requires a string command")
-        allowed_commands = [tuple(item) for item in context.plan.validation_commands]
+        allowed_commands = [tuple(item) for item in context.validation_commands]
         matches = [item for item in allowed_commands if command == subprocess.list2cmdline(list(item))]
         if len(matches) != 1:
             return self._deny(ToolEffect.EXECUTE, "Command is not an exact approved Plan validation command")

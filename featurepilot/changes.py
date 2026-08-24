@@ -7,7 +7,7 @@ import hashlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .domain import PlanRecord
+from .domain import ExecutionScope, PlanRecord
 from .path_policy import should_ignore_repository_path
 from .workspace import Workspace
 
@@ -77,14 +77,15 @@ class ChangeService:
         self,
         snapshot: RepositorySnapshot,
         workspace: Workspace,
-        record: PlanRecord,
+        scope: ExecutionScope | PlanRecord,
         *,
         output_path: Path | None = None,
     ) -> tuple[ChangeArtifact, Path]:
+        normalized_scope = _execution_scope(scope)
         workspace_files = _read_repository_files(workspace.path.resolve())
         approved = {
             path.replace("\\", "/").casefold()
-            for path in (*record.plan.modify_files, *record.plan.expected_files)
+            for path in (*normalized_scope.modify_files, *normalized_scope.expected_files)
         }
         changes: list[FileChange] = []
         patch_parts: list[str] = []
@@ -119,6 +120,12 @@ class ChangeService:
             raise ValueError("Managed Run patch must be stored at <run>/changes.patch")
         _atomic_write_text(patch_path, "".join(patch_parts), suffix=workspace.run_id)
         return artifact, patch_path
+
+
+def _execution_scope(scope: ExecutionScope | PlanRecord) -> ExecutionScope:
+    """Keep direct artifact callers compatible with approved Plan records."""
+
+    return scope if isinstance(scope, ExecutionScope) else ExecutionScope.from_plan(scope)
 
 
 def _read_repository_files(root: Path) -> dict[str, bytes]:

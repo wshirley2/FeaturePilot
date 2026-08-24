@@ -34,6 +34,7 @@ class RuntimeResultStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     LIMIT_REACHED = "limit_reached"
+    ESCALATION_REQUIRED = "escalation_required"
 
 
 @dataclass(frozen=True, slots=True)

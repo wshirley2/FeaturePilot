@@ -14,6 +14,9 @@ def system_prompt(
     cwd = working_directory or os.getcwd()
     tool_list = "\n".join(f"- **{t.name}**: {t.description}" for t in tools)
     uname = platform.uname()
+    shell_guidance = ""
+    if uname.system.casefold() == "windows":
+        shell_guidance = "\n9. **Windows shell.** The `bash` tool runs through `cmd.exe`; use cmd-compatible commands such as `dir`, not Unix commands such as `ls -la`."
 
     return f"""\
 You are {assistant_name}, an AI coding assistant running in the user's terminal.
@@ -35,5 +38,5 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
 5. **One step at a time.** For multi-step tasks, execute them sequentially.
 6. **edit_file uniqueness.** When using edit_file, include enough surrounding context in old_string to guarantee a unique match.
 7. **Respect existing style.** Match the project's coding conventions.
-8. **Ask when unsure.** If the request is ambiguous, ask for clarification rather than guessing.
+8. **Ask when unsure.** If the request is ambiguous, ask for clarification rather than guessing.""" + shell_guidance + """
 """ + (f"\n# Repository Context\n{additional_context}\n" if additional_context else "")

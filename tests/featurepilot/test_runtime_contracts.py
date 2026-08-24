@@ -130,3 +130,14 @@ def test_limit_result_requires_explicit_limit_facts():
             status=RuntimeResultStatus.LIMIT_REACHED,
             reason="stopped",
         )
+
+
+def test_escalation_required_is_a_non_failure_runtime_result():
+    result = TaskRuntimeResult(
+        scope=RuntimeResultScope.TURN,
+        status=RuntimeResultStatus.ESCALATION_REQUIRED,
+        response="需要隔离执行",
+        reason="源仓库未执行",
+    )
+
+    assert TaskRuntimeResult.from_dict(result.to_dict()) == result

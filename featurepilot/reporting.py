@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .changes import ChangeArtifact
-from .domain import PlanRecord, Run
+from .domain import ExecutionScope, PlanRecord, Run
 from .execution import ValidationArtifact
 from .runtime import TaskRuntime
 from .workspace import Workspace
@@ -41,7 +41,8 @@ class ReportService:
     def generate(
         self,
         *,
-        record: PlanRecord,
+        scope: ExecutionScope | None = None,
+        record: PlanRecord | None = None,
         run: Run,
         workspace: Workspace,
         response: str,
@@ -54,12 +55,15 @@ class ReportService:
         session_path: Path | None = None,
         output_path: Path | None = None,
     ) -> Path:
+        if (scope is None) == (record is None):
+            raise ValueError("Pass exactly one of scope or record to ReportService.generate")
+        normalized_scope = scope or ExecutionScope.from_plan(record)
         run_directory = workspace.path.resolve().parent
         report_path = (output_path or run_directory / "report.md").resolve()
         if report_path != run_directory / "report.md":
             raise ValueError("Managed Run report must be stored at <run>/report.md")
         content = _render_report(
-            record=record,
+            scope=normalized_scope,
             run=run,
             workspace=workspace,
             response=response,
@@ -94,7 +98,7 @@ def collect_run_metrics(runtime: TaskRuntime | None, duration_seconds: float) ->
 
 def _render_report(
     *,
-    record: PlanRecord,
+    scope: ExecutionScope,
     run: Run,
     workspace: Workspace,
     response: str,
@@ -106,14 +110,16 @@ def _render_report(
     metrics: RunMetrics,
     session_path: Path | None = None,
 ) -> str:
-    task = record.task.description if record.task else record.plan.summary
+    task = scope.task.description
+    reference_label = "Plan" if scope.is_plan_backed else "Execution scope"
+    scope_heading = "Plan" if scope.is_plan_backed else "Execution scope"
     lines = [
         "# FeaturePilot Managed Run Report",
         "",
         "## Summary",
         "",
         f"- Task: {task}",
-        f"- Plan: {record.reference}",
+        f"- {reference_label}: {scope.reference}",
         f"- Run: {run.id}",
         f"- Status: **{run.status}**",
         f"- Workspace: `{workspace.path}`",
@@ -122,9 +128,9 @@ def _render_report(
         f"- Patch: `{patch_path}`",
         f"- Validation: `{validation_path}`" if validation_path else "- Validation: not produced",
         "",
-        "## Plan",
+        f"## {scope_heading}",
         "",
-        *(_bullet(step) for step in record.plan.steps),
+        *(_bullet(step) for step in scope.steps),
         "",
         "## Agent Summary",
         "",
@@ -196,7 +202,7 @@ def _render_report(
         else "- No failure recorded."
     )
 
-    risks = list(record.plan.risks)
+    risks = list(scope.risks)
     if changes.out_of_plan_files:
         risks.append("Out-of-plan files changed: " + ", ".join(changes.out_of_plan_files))
     binary_files = [change.path for change in changes.files if change.binary]

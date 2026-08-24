@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from uuid import uuid4
 
+from corecoder.agent import ToolExecutionContext
+from corecoder.events import RuntimeEventType
 from corecoder.permissions import (
     DenyPermissionPrompt,
     PermissionAction,
@@ -19,6 +22,19 @@ from corecoder.tools.bash import BashTool
 from corecoder.tools.edit import _changed_files
 from corecoder.trusted_diff import FileWriteProposal, SourceSnapshotChanged, TrustedDiffError
 
+from .execution import (
+    CommandKind,
+    ExecutionControlAssessment,
+    ExecutionControlPolicy,
+    ExternalEffect,
+    FileCategory,
+    ImpactScope,
+    NormalizedCommand,
+    NormalizedToolRequest,
+    OperationKind,
+    PathBoundary,
+    RequiredControl,
+)
 from .permissions import ChatPermissionPolicy, command_effect, command_prefix, command_tokens
 
 _PATH_ARGUMENTS = {
@@ -48,8 +64,11 @@ class RepositoryToolExecutor:
         self,
         repository_root: str | Path,
         permission_manager: PermissionManager | None = None,
+        *,
+        task_id: str | None = None,
     ):
         self.repository_root = Path(repository_root).resolve()
+        self.task_id = task_id
         self.permission_manager = permission_manager or PermissionManager(
             ChatPermissionPolicy(),
             DenyPermissionPrompt(),
@@ -57,12 +76,28 @@ class RepositoryToolExecutor:
         self._side_effect_lock = threading.Lock()
         self._turn_stop_lock = threading.Lock()
         self._turn_stop_message: str | None = None
+        self._pending_isolation_request: dict[str, Any] | None = None
+        self._execution_control_policy = ExecutionControlPolicy()
 
     def begin_turn(self) -> None:
         """Clear the optional stop request left by the previous Chat turn."""
 
         with self._turn_stop_lock:
             self._turn_stop_message = None
+            self._pending_isolation_request = None
+
+    def take_pending_isolation_request(self) -> dict[str, Any] | None:
+        """Return the current turn's unexecuted isolation request once."""
+
+        with self._turn_stop_lock:
+            request = self._pending_isolation_request
+            self._pending_isolation_request = None
+            return request
+
+    def set_task_id(self, task_id: str | None) -> None:
+        """Refresh the optional Chat task correlation after Session resume."""
+
+        self.task_id = task_id
 
     def consume_turn_stop_message(self) -> str | None:
         """Return and clear a user-denial request to end the current turn."""
@@ -81,10 +116,57 @@ class RepositoryToolExecutor:
         arguments: dict[str, Any],
         *,
         tool_call_id: str,
+        execution_context: ToolExecutionContext | None = None,
     ) -> str:
         """Execute the exact Runtime-held call after path and permission checks."""
 
         normalized = dict(arguments)
+        path_boundary = PathBoundary.REPOSITORY
+        affected_paths: tuple[str, ...] = ()
+        path_argument = _PATH_ARGUMENTS.get(tool.name)
+        if path_argument:
+            value = normalized.get(path_argument, ".")
+            path_boundary, affected_paths, resolved_path = self._normalized_path_fact(value)
+            if resolved_path is not None:
+                normalized[path_argument] = str(resolved_path)
+
+        control_request = self._normalized_control_request(
+            tool.name,
+            normalized,
+            path_boundary=path_boundary,
+            affected_paths=affected_paths,
+        )
+        assessment = self._execution_control_policy.assess(control_request)
+        self._emit_execution_control_assessment(
+            execution_context,
+            tool_call_id,
+            control_request,
+            assessment,
+        )
+        if assessment.required_control is RequiredControl.BLOCK:
+            message = _control_message("该操作已被阻断，未执行。", assessment)
+            self._request_turn_stop(message)
+            return f"Policy denied {tool.name}: {message}"
+        if assessment.required_control is RequiredControl.ISOLATE:
+            message = _control_message(
+                "该操作需要隔离执行；本轮没有执行，源仓库未修改。可由你选择在隔离 Workspace 中继续。",
+                assessment,
+            )
+            with self._turn_stop_lock:
+                self._pending_isolation_request = {
+                    "task_id": self.task_id,
+                    "tool_name": tool.name,
+                    "tool_call_id": tool_call_id,
+                    "session_id": execution_context.session_id if execution_context is not None else None,
+                    "turn_id": execution_context.turn_id if execution_context is not None else None,
+                    "message": message,
+                    "normalized_summary": _control_summary(control_request),
+                    "reasons": _serialized_reasons(assessment),
+                    "original_arguments": dict(arguments),
+                }
+            self._request_turn_stop(message)
+            return f"[isolation required] {message}"
+
         if tool.name == "glob":
             pattern_error = _validate_relative_pattern(normalized.get("pattern"), "glob pattern")
             if pattern_error:
@@ -93,13 +175,8 @@ class RepositoryToolExecutor:
             pattern_error = _validate_relative_pattern(normalized.get("include"), "grep include")
             if pattern_error:
                 return f"Policy denied grep: {pattern_error}"
-        path_argument = _PATH_ARGUMENTS.get(tool.name)
-        if path_argument:
-            value = normalized.get(path_argument, ".")
-            try:
-                normalized[path_argument] = str(self._resolve_path(value))
-            except ValueError as error:
-                return f"Policy denied {tool.name}: {error}"
+        if path_argument and path_boundary is not PathBoundary.REPOSITORY:
+            return f"Policy denied {tool.name}: path could not be normalized within the repository"
 
         if tool.name in {"edit_file", "write_file"}:
             with self._side_effect_lock:
@@ -225,26 +302,244 @@ class RepositoryToolExecutor:
         return FileWriteProposal.for_write(path, display_path=display_path, content=content)
 
     def _resolve_path(self, value: object) -> Path:
+        boundary, _, candidate = self._normalized_path_fact(value)
+        if boundary is PathBoundary.REPOSITORY and candidate is not None:
+            return candidate
+        if boundary is PathBoundary.OUTSIDE_REPOSITORY:
+            raise ValueError(f"path is outside repository: {value}")
+        raise ValueError("path must be a non-empty string")
+
+    def _normalized_path_fact(self, value: object) -> tuple[PathBoundary, tuple[str, ...], Path | None]:
         if not isinstance(value, (str, Path)) or not str(value):
-            raise ValueError("path must be a non-empty string")
+            return PathBoundary.UNRESOLVED, ("<invalid path>",), None
         raw = Path(str(value)).expanduser()
         candidate = raw.resolve() if raw.is_absolute() else (self.repository_root / raw).resolve()
+        if _is_dangerous_system_path(candidate):
+            return PathBoundary.DANGEROUS_SYSTEM, (str(candidate),), candidate
         try:
-            candidate.relative_to(self.repository_root)
-        except ValueError as error:
-            raise ValueError(f"path is outside repository: {value}") from error
-        return candidate
+            relative = candidate.relative_to(self.repository_root).as_posix()
+        except ValueError:
+            return PathBoundary.OUTSIDE_REPOSITORY, (str(candidate),), candidate
+        return PathBoundary.REPOSITORY, (relative,), candidate
+
+    def _normalized_control_request(
+        self,
+        tool_name: str,
+        normalized: dict[str, Any],
+        *,
+        path_boundary: PathBoundary,
+        affected_paths: tuple[str, ...],
+    ) -> NormalizedToolRequest:
+        command = _normalized_command(normalized.get("command")) if tool_name == "bash" else None
+        operation = _operation_kind(tool_name, command)
+        return NormalizedToolRequest(
+            tool_name=tool_name,
+            operation=operation,
+            path_boundary=path_boundary,
+            affected_paths=affected_paths,
+            file_categories=_file_categories(affected_paths, command),
+            impact_scope=_impact_scope(operation, command, affected_paths),
+            command=command,
+            external_effect=_external_effect(tool_name, command),
+        )
+
+    def _emit_execution_control_assessment(
+        self,
+        execution_context: ToolExecutionContext | None,
+        tool_call_id: str,
+        request: NormalizedToolRequest,
+        assessment: ExecutionControlAssessment,
+    ) -> None:
+        if execution_context is None:
+            return
+        execution_context.emit(
+            RuntimeEventType.EXECUTION_CONTROL_ASSESSED,
+            tool_call_id=tool_call_id,
+            payload={
+                "task_id": self.task_id,
+                "tool_name": request.tool_name,
+                "normalized_summary": _control_summary(request),
+                "required_control": assessment.required_control.value,
+                "reasons": _serialized_reasons(assessment),
+            },
+        )
+
+    def _request_turn_stop(self, message: str) -> None:
+        with self._turn_stop_lock:
+            self._turn_stop_message = message
 
     def _stop_after_interactive_denial(self, tool_name: str, decision) -> None:
         """Stop retry loops only when a user explicitly rejected an ASK request."""
 
         if decision.action is not PermissionAction.DENY or not decision.prompted:
             return
-        with self._turn_stop_lock:
-            self._turn_stop_message = (
-                f"已按你的拒绝停止本轮后续操作；{tool_name} 没有执行。"
-                "你可以继续说明下一步需求。"
-            )
+        self._request_turn_stop(
+            f"已按你的拒绝停止本轮后续操作；{tool_name} 没有执行。你可以继续说明下一步需求。"
+        )
+
+
+def _normalized_command(value: object) -> NormalizedCommand:
+    if not isinstance(value, str) or not value.strip():
+        return NormalizedCommand(is_parseable=False)
+    tokens = command_tokens(value)
+    lowered = tuple(token.lower() for token in tokens)
+    has_fix = any(token in {"--fix", "--write", "--update-snapshots", "-w"} for token in lowered)
+    has_complex_shell = bool(re.search(r"(?:\|\|?|&&?|;|[<>]{1,2}|\$\()", value))
+    return NormalizedCommand(
+        tokens=tokens,
+        kind=_command_kind(lowered, has_fix),
+        is_parseable=bool(tokens),
+        has_pipeline=has_complex_shell,
+        has_redirection=bool(re.search(r"[<>]{1,2}", value)),
+        has_command_substitution="$(" in value,
+        has_fix=has_fix,
+    )
+
+
+def _command_kind(tokens: tuple[str, ...], has_fix: bool) -> CommandKind:
+    names = tuple(Path(token).name.lower() for token in tokens)
+    if names[:1] == ("dir",):
+        return CommandKind.READ_ONLY_SHELL
+    if len(names) >= 2 and names[0] == "git" and names[1] == "push":
+        return CommandKind.PUSH
+    if "publish" in names:
+        return CommandKind.PUBLISH
+    if any(name in {"protoc", "openapi-generator", "datamodel-codegen"} for name in names):
+        return CommandKind.CODE_GENERATION
+    if has_fix or any(name in {"black", "autopep8", "isort", "prettier"} for name in names):
+        return CommandKind.FORMAT
+    if len(names) >= 2 and names[0] == "git" and names[1] in {
+        "blame", "branch", "cat-file", "describe", "diff", "grep", "log", "ls-files", "show", "status",
+    }:
+        return CommandKind.READ_ONLY_GIT
+    if any(name in {"pytest", "ruff", "flake8", "mypy", "eslint", "pylint", "vitest", "jest"} for name in names):
+        return CommandKind.TEST if any(name in {"pytest", "vitest", "jest"} for name in names) else CommandKind.LINT
+    return CommandKind.GENERAL
+
+
+def _operation_kind(tool_name: str, command: NormalizedCommand | None) -> OperationKind:
+    fixed = {
+        "read_file": OperationKind.READ,
+        "glob": OperationKind.SEARCH,
+        "grep": OperationKind.SEARCH,
+        "edit_file": OperationKind.WRITE,
+        "write_file": OperationKind.WRITE,
+        "fetch_url": OperationKind.NETWORK,
+        "now": OperationKind.READ,
+    }.get(tool_name)
+    if fixed is not None:
+        return fixed
+    tokens = tuple(token.lower() for token in command.tokens) if command is not None else ()
+    names = tuple(Path(token).name for token in tokens)
+    if names[:2] == ("git", "rm") or names[:1] in {"rm", "del", "erase", "rmdir", "rd", "remove-item", "unlink"}:
+        return OperationKind.DELETE
+    if names[:2] == ("git", "mv") or names[:1] in {"mv", "move", "move-item"}:
+        return OperationKind.MOVE
+    if names[:1] in {"ren", "rename", "rename-item"}:
+        return OperationKind.RENAME
+    if command is not None and command.kind is CommandKind.PUBLISH:
+        return OperationKind.PUBLISH
+    return OperationKind.COMMAND
+
+
+def _file_categories(paths: tuple[str, ...], command: NormalizedCommand | None) -> frozenset[FileCategory]:
+    categories: set[FileCategory] = set()
+    for path in paths:
+        normalized = path.replace("\\", "/").lower()
+        name = normalized.rsplit("/", 1)[-1]
+        if name.endswith(".lock") or name in {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock"}:
+            categories.add(FileCategory.LOCK_FILE)
+        elif name in {"pyproject.toml", "package.json", "requirements.txt", "pipfile", "cargo.toml", "go.mod"}:
+            categories.add(FileCategory.DEPENDENCY_MANIFEST)
+        elif "/migrations/" in f"/{normalized}" or "migration" in name:
+            categories.add(FileCategory.DATABASE_MIGRATION)
+        elif normalized.startswith(".github/workflows/") or name in {".gitlab-ci.yml", "azure-pipelines.yml"}:
+            categories.add(FileCategory.CI_CONFIG)
+        elif any(part in normalized for part in ("deploy/", "deployment/", "dockerfile", "docker-compose", "helm/")):
+            categories.add(FileCategory.DEPLOYMENT_CONFIG)
+        else:
+            categories.add(FileCategory.SOURCE)
+    if command and command.kind is CommandKind.CODE_GENERATION:
+        categories.add(FileCategory.SOURCE)
+    return frozenset(categories or {FileCategory.OTHER})
+
+
+def _impact_scope(
+    operation: OperationKind,
+    command: NormalizedCommand | None,
+    paths: tuple[str, ...],
+) -> ImpactScope:
+    if len(paths) > 1:
+        return ImpactScope.MULTI_FILE
+    if paths and paths[0].endswith("/"):
+        return ImpactScope.DIRECTORY
+    if operation in {OperationKind.DELETE, OperationKind.MOVE, OperationKind.RENAME}:
+        return ImpactScope.UNKNOWN
+    if command and command.kind in {CommandKind.FORMAT, CommandKind.CODE_GENERATION}:
+        return ImpactScope.UNKNOWN
+    return ImpactScope.SINGLE_FILE
+
+
+def _external_effect(tool_name: str, command: NormalizedCommand | None) -> ExternalEffect:
+    if tool_name == "fetch_url":
+        return ExternalEffect.NETWORK
+    if command is None:
+        return ExternalEffect.NONE
+    if command.kind is CommandKind.PUSH:
+        return ExternalEffect.PUSH
+    if command.kind is CommandKind.PUBLISH:
+        return ExternalEffect.PUBLISH
+    names = {Path(token).name.lower() for token in command.tokens}
+    if names & {"curl", "wget", "invoke-webrequest", "invoke-restmethod", "iwr", "irm"}:
+        return ExternalEffect.NETWORK
+    return ExternalEffect.NONE
+
+
+def _control_summary(request: NormalizedToolRequest) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "operation": request.operation.value,
+        "path_boundary": request.path_boundary.value,
+        "affected_paths": list(request.affected_paths),
+        "file_categories": sorted(category.value for category in request.file_categories),
+        "impact_scope": request.impact_scope.value,
+        "external_effect": request.external_effect.value,
+    }
+    if request.command is not None:
+        summary["command"] = {
+            "tokens": list(request.command.tokens),
+            "kind": request.command.kind.value,
+            "is_parseable": request.command.is_parseable,
+            "has_pipeline": request.command.has_pipeline,
+            "has_redirection": request.command.has_redirection,
+            "has_command_substitution": request.command.has_command_substitution,
+            "has_fix": request.command.has_fix,
+        }
+    return summary
+
+
+def _serialized_reasons(assessment: ExecutionControlAssessment) -> list[dict[str, object]]:
+    return [
+        {
+            "code": reason.code.value,
+            "required_control": reason.required_control.value,
+            "message": reason.message,
+            "evidence": list(reason.evidence),
+        }
+        for reason in assessment.reasons
+    ]
+
+
+def _control_message(prefix: str, assessment: ExecutionControlAssessment) -> str:
+    details = "；".join(
+        f"{reason.message}（{'，'.join(reason.evidence)}）"
+        for reason in assessment.reasons
+    )
+    return f"{prefix}\n原因与证据：{details}"
+
+
+def _is_dangerous_system_path(path: Path) -> bool:
+    normalized = str(path).replace("\\", "/").lower()
+    return normalized.startswith(("c:/windows/", "c:/program files/", "/etc/", "/usr/", "/bin/", "/sbin/"))
 
 
 def _denied(tool_name: str, reason: str) -> str:

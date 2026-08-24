@@ -19,6 +19,8 @@ from corecoder.context import estimate_tokens
 from corecoder.events import RuntimeEvent, RuntimeEventType
 from corecoder.tools.edit import _changed_files
 
+from .domain import ExecutionScope, Task
+from .managed import ManagedRunExecutionError, ManagedRunService
 from .runtime import TaskRuntime
 
 if TYPE_CHECKING:
@@ -96,6 +98,30 @@ class TerminalEventSink:
             prefix = "\n" if self._streamed else ""
             self.console.print(f"{prefix}[dim]→ {name}({arguments})[/dim]")
             self._streamed = False
+        elif event.event_type is RuntimeEventType.EXECUTION_CONTROL_ASSESSED:
+            required = event.payload.get("required_control")
+            if required in {"block", "isolate"}:
+                reasons = event.payload.get("reasons", [])
+                details = []
+                for reason in reasons:
+                    if not isinstance(reason, dict):
+                        continue
+                    evidence = reason.get("evidence", [])
+                    evidence_text = "；".join(str(item) for item in evidence)
+                    details.append(f"- {reason.get('message', '控制规则')}：{evidence_text}")
+                if required == "isolate":
+                    title = "需要隔离执行"
+                    head = "本轮没有执行，源仓库未修改。可选择在隔离 Workspace 中继续。"
+                    style = "yellow"
+                else:
+                    title = "操作已阻断"
+                    head = "该 Tool Call 未执行。"
+                    style = "red"
+                self.console.print(Panel(
+                    "\n".join([head, "原因与证据：", *(details or ["- 无额外详情"])]),
+                    title=title,
+                    border_style=style,
+                ))
         elif event.event_type is RuntimeEventType.TOOL_COMPLETED:
             call_id = event.tool_call_id or event.event_id
             started = self._tool_started.pop(call_id, None)
@@ -103,11 +129,13 @@ class TerminalEventSink:
             tool_name = str(event.payload.get("tool_name") or (started[1] if started else "tool"))
             result = str(event.payload.get("result", ""))
             status = "interrupted" if event.payload.get("interrupted") else _tool_status(result)
-            style = "yellow" if status in {"interrupted", "not executed"} else ("red" if status in {"error", "denied"} else "green")
+            style = "yellow" if status in {"interrupted", "not executed", "isolation required"} else ("red" if status in {"error", "denied"} else "green")
             self.console.print(f"[{style}]← {tool_name}: {status}{elapsed}[/{style}]")
             if result:
                 if status == "not executed":
                     self.console.print("[dim]未执行：达到运行限制。[/dim]")
+                elif status == "isolation required":
+                    self.console.print("[dim]未执行：等待你选择是否转入隔离执行。[/dim]")
                 elif status in {"error", "denied", "interrupted"} or self.show_full_results or tool_name != "read_file":
                     self.console.print(f"[dim]{_summarize(result, self.result_limit)}[/dim]")
                 else:
@@ -138,11 +166,13 @@ class ChatSession:
         console: Console | None = None,
         input_fn: InputFunction | None = None,
         plan_session: PlanChatSession | None = None,
+        isolation_service: ManagedRunService | None = None,
     ):
         self.runtime = runtime
         self.console = console or Console()
         self.input_fn = input_fn
         self.plan_session = plan_session
+        self.isolation_service = isolation_service
         self._plan_mode = False
         self._prompt_session: PromptSession[str] | None = None
 
@@ -188,11 +218,16 @@ class ChatSession:
                 continue
 
             try:
+                known_isolations = {
+                    str(item.get("tool_call_id"))
+                    for item in self.runtime.pending_isolation_requests
+                }
                 response = self.runtime.run_turn(user_input)
                 # Providers used by embedders may not stream token callbacks.
                 sink = self.runtime.agent.event_sink
                 if not getattr(sink, "last_turn_streamed", False) and response:
                     self.console.print(Markdown(response))
+                self._offer_new_isolation(known_isolations)
             except KeyboardInterrupt:
                 self.console.print("[yellow]Turn cancelled. The chat session is still active.[/yellow]")
             except Exception as error:
@@ -227,17 +262,10 @@ class ChatSession:
             "[bold]FeaturePilot Chat[/bold]",
             f"Repository: [cyan]{self.runtime.repository}[/cyan]",
             f"Model: [cyan]{self.runtime.config.model}[/cyan]",
-            f"Permission: [yellow]{self.runtime.permission_mode}[/yellow]",
+            "操作保护：写入和命令会在执行前按实际影响进行确认、隔离或阻断。",
             f"Session: [dim]{self.runtime.agent.session_id[:8]}[/dim]",
             f"Tools: {', '.join(tool.name for tool in self.runtime.tools)}",
             *profile_lines,
-            *(
-                [
-                    "Plan：输入“先制定计划：<任务>”进入 Plan 模式；明确回复“批准并执行”后才会创建隔离 Workspace。"
-                ]
-                if self.plan_session is not None
-                else []
-            ),
             "Type /help for commands; Ctrl+C cancels a turn; /exit exits Chat.",
         ])
         self.console.print(Panel(body, border_style="blue"))
@@ -315,6 +343,8 @@ class ChatSession:
         table.add_row("Context", context_text)
         table.add_row("Usage", f"{prompt} prompt + {completion} completion = {prompt + completion} total")
         table.add_row("Estimated cost", cost_text)
+        pending_isolations = getattr(self.runtime, "pending_isolation_requests", [])
+        table.add_row("Isolation", f"{len(pending_isolations)} pending" if pending_isolations else "none")
         self.console.print(table)
 
     def _show_tools(self) -> None:
@@ -448,6 +478,12 @@ class ChatSession:
             self.console.print(f"[red]Could not load Session: {error}[/red]")
             return
         warnings = "\n".join(f"- {warning}" for warning in item.warnings) or "- none"
+        if item.pending_isolation_requests:
+            result_line = "Last result: 需要隔离执行（本轮未执行）"
+        elif item.last_result is not None:
+            result_line = f"Last result: {item.last_result.status.value} ({item.last_result.scope.value})"
+        else:
+            result_line = "Last result: -"
         self.console.print(Panel(
             "\n".join([
                 f"Session: {item.session_id}",
@@ -458,15 +494,18 @@ class ChatSession:
                 f"Run: {item.run_id or '-'}",
                 f"Model: {item.model or '?'}",
                 f"Status: {item.status}",
-                (
-                    f"Last result: {item.last_result.status.value} "
-                    f"({item.last_result.scope.value})"
-                    if item.last_result is not None
-                    else "Last result: -"
-                ),
+                result_line,
                 f"Events: {len(item.events)}",
                 f"Messages: {len(item.messages)} (model projection: {len(item.model_messages)})",
                 f"Usage: {item.prompt_tokens} prompt + {item.completion_tokens} completion",
+                f"Pending isolation requests: {len(item.pending_isolation_requests)}",
+                *(
+                    [
+                        f"- {request.get('tool_name', 'tool')}: {request.get('summary', {})}"
+                        for request in item.pending_isolation_requests
+                    ]
+                    or ["- none"]
+                ),
                 "Recovery warnings:",
                 warnings,
             ]),
@@ -487,7 +526,14 @@ class ChatSession:
             self.console.print(f"[red]Could not resume Session: {error}[/red]")
             return
         warning = f" Warnings: {len(item.warnings)}." if item.warnings else ""
-        self.console.print(f"[green]Resumed Session {item.session_id} ({len(item.model_messages)} messages).[/green]{warning}")
+        isolation = (
+            f" Pending isolation: {len(item.pending_isolation_requests)}."
+            if item.pending_isolation_requests
+            else ""
+        )
+        self.console.print(
+            f"[green]Resumed Session {item.session_id} ({len(item.model_messages)} messages).[/green]{warning}{isolation}"
+        )
 
     def _details(self, value: str) -> None:
         sink = self.runtime.agent.event_sink
@@ -568,6 +614,136 @@ class ChatSession:
             ]),
         })
 
+    def _offer_new_isolation(self, known_call_ids: set[str]) -> None:
+        if self.isolation_service is None:
+            return
+        pending = next(
+            (
+                item for item in reversed(self.runtime.pending_isolation_requests)
+                if str(item.get("tool_call_id")) not in known_call_ids
+            ),
+            None,
+        )
+        if pending is None:
+            return
+        tool_call_id = str(pending.get("tool_call_id") or "")
+        if not tool_call_id:
+            return
+        self.console.print(Panel(
+            "这项操作尚未执行，源仓库未修改。\n"
+            "1. 在隔离 Workspace 中继续\n"
+            "2. 保持当前 Chat，不执行\n"
+            "0. 取消这项任务",
+            title="需要隔离执行",
+            border_style="yellow",
+        ))
+        try:
+            decision = self._read_input("请选择 1 / 2 / 0 > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            decision = "2"
+        if decision == "1":
+            self._start_isolated_run(pending)
+        elif decision == "0":
+            self.runtime.record_isolation_event("isolation_cancelled", tool_call_id, {
+                "reason": "User cancelled the pending isolated execution",
+            })
+            self.runtime.resolve_pending_isolation(tool_call_id)
+            self.console.print("[yellow]已取消这项隔离执行；源仓库未修改。[/yellow]")
+        else:
+            self.console.print("[cyan]已保持当前 Chat；该操作仍未执行，可稍后通过 /session show 查看。[/cyan]")
+
+    def _start_isolated_run(self, pending: dict[str, object]) -> None:
+        assert self.isolation_service is not None
+        tool_call_id = str(pending["tool_call_id"])
+        summary = pending.get("normalized_summary") or pending.get("summary")
+        if not isinstance(summary, dict):
+            self.console.print("[red]无法恢复隔离执行范围；原操作未执行。[/red]")
+            return
+        reasons = pending.get("reasons")
+        reason_values = reasons if isinstance(reasons, list) else []
+        arguments = pending.get("original_arguments")
+        argument_values = arguments if isinstance(arguments, dict) else {}
+        validation_commands = self.runtime.profile.validation_commands if self.runtime.profile else []
+        task = Task(
+            project_id=str(self.runtime.repository),
+            description=str(pending.get("user_request") or "Continue the approved isolated Chat operation"),
+            task_type="configuration" if "dependency_manifest" in summary.get("file_categories", []) else "feature",
+        )
+        scope = ExecutionScope.from_chat_escalation(
+            task=task,
+            source_repository=self.runtime.repository,
+            chat_session_id=self.runtime.agent.session_id,
+            chat_turn_id=pending.get("turn_id") if isinstance(pending.get("turn_id"), str) else None,
+            tool_call_id=tool_call_id,
+            tool_name=str(pending.get("tool_name") or "unknown"),
+            arguments=argument_values,
+            summary=summary,
+            reasons=[item for item in reason_values if isinstance(item, dict)],
+            validation_commands=validation_commands,
+            trigger_reason=str(pending.get("message") or "Chat execution control required isolation"),
+        )
+        self.runtime.record_isolation_event("isolation_upgrade_started", tool_call_id, {
+            "execution_scope": scope.to_dict(),
+        })
+        self.console.print("[cyan]正在创建隔离 Workspace 并继续执行…[/cyan]")
+        try:
+            result = self.isolation_service.execute_scope(scope, model=self.runtime.config.model)
+        except ManagedRunExecutionError as error:
+            self.runtime.record_isolation_event("isolation_upgrade_failed", tool_call_id, {
+                "error_type": type(error.cause).__name__,
+                "error": str(error.cause),
+                "workspace": str(error.workspace.path),
+            })
+            self.console.print(f"[red]隔离执行失败，源仓库未修改。Workspace: {error.workspace.path}[/red]")
+            return
+        except (OSError, ValueError) as error:
+            self.runtime.record_isolation_event("isolation_upgrade_failed", tool_call_id, {
+                "error_type": type(error).__name__,
+                "error": str(error),
+            })
+            self.console.print(f"[red]无法创建或启动隔离执行，源仓库未修改：{error}[/red]")
+            return
+        self.runtime.record_isolation_event("isolation_upgrade_completed", tool_call_id, {
+            "run_id": result.run.id,
+            "workspace": str(result.workspace.path),
+            "status": result.run.status,
+            "patch": str(result.patch_path),
+            "validation": str(result.validation_path) if result.validation_path else None,
+            "report": str(result.report_path),
+        })
+        self.runtime.resolve_pending_isolation(tool_call_id)
+        self._remember_isolated_run(result)
+        validation = result.validation.status if result.validation is not None else "not_started"
+        self.console.print(Panel(
+            "\n".join([
+                f"状态：{result.run.status}",
+                f"Workspace：{result.workspace.path}",
+                f"Validation：{validation}",
+                f"Patch：{result.patch_path}",
+                f"Report：{result.report_path}",
+                "已返回原 Chat；源仓库未修改。可继续审查结果或提出下一步。",
+            ]),
+            title="隔离执行已结束",
+            border_style="green" if result.run.status == "succeeded" else "yellow",
+        ))
+
+    def _remember_isolated_run(self, result) -> None:
+        validation_status = result.validation.status if result.validation is not None else "not_started"
+        self.runtime.agent.messages.append({
+            "role": "system",
+            "content": "\n".join([
+                "A Chat isolation upgrade completed.",
+                f"Run: {result.run.id}",
+                f"Status: {result.run.status}",
+                f"Workspace: {result.workspace.path}",
+                f"Validation: {validation_status}",
+                f"Events: {result.events_path}",
+                f"Patch: {result.patch_path}",
+                f"Report: {result.report_path}",
+                "The source repository remains unchanged; further Chat tools target it, not the Workspace.",
+            ]),
+        })
+
     def _repository_changed_files(self) -> list[str]:
         files = []
         for value in _changed_files:
@@ -599,6 +775,8 @@ def _tool_status(result: str) -> str:
     lowered = result.lstrip().lower()
     if lowered.startswith("[limit reached]"):
         return "not executed"
+    if lowered.startswith("[isolation required]"):
+        return "isolation required"
     if lowered.startswith(("policy denied", "permission denied", "⚠ blocked")):
         return "denied"
     if lowered.startswith("error") or "[exit code:" in lowered:

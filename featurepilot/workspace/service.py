@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..domain import PlanRecord, Run
+from ..domain import ExecutionScope, PlanRecord, Run
 from ..runtime_contracts import TaskRuntimePaths
 from .backend import Workspace, WorkspaceBackend
 
@@ -17,10 +17,17 @@ class WorkspaceService:
         self.backend = backend
 
     def create_for_plan(self, record: PlanRecord) -> tuple[Run, Workspace]:
+        """Compatibility entry point for the existing approved-Plan path."""
+
         if record.status != "approved":
-            raise ValueError(f"Only approved plans can create a workspace; current status is {record.status!r}")
-        run = Run(task_id=record.plan.task_id, plan_id=record.id)
-        workspace = self.backend.create(Path(record.repository), run.id, label=record.reference)
+            raise ValueError("Only approved plans can create a Workspace")
+        return self.create_for_scope(ExecutionScope.from_plan(record))
+
+    def create_for_scope(self, scope: ExecutionScope) -> tuple[Run, Workspace]:
+        """Create an isolated Workspace for an already approved execution scope."""
+
+        run = Run(task_id=scope.task.id, plan_id=scope.plan_id)
+        workspace = self.backend.create(scope.source_repository, run.id, label=scope.reference)
         run.workspace_path = str(workspace.path)
         run.source_snapshot = workspace.source_snapshot
         self.save_run(run)

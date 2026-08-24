@@ -105,6 +105,7 @@ class SessionProjection:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     last_result: TaskRuntimeResult | None = None
+    pending_isolation_requests: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def total_tokens(self) -> int:
@@ -236,6 +237,31 @@ class SessionStore:
                     },
                     "content": payload.get("assistant_content") or None,
                 })
+            elif event.event_type == RuntimeEventType.EXECUTION_CONTROL_ASSESSED.value:
+                if payload.get("required_control") == "isolate":
+                    projection.pending_isolation_requests.append({
+                        "task_id": payload.get("task_id"),
+                        "session_id": event.session_id,
+                        "turn_id": event.turn_id,
+                        "round_index": event.round_index,
+                        "tool_call_id": event.tool_call_id,
+                        "tool_name": payload.get("tool_name"),
+                        "summary": payload.get("normalized_summary"),
+                        "reasons": copy.deepcopy(payload.get("reasons", [])),
+                    })
+            elif event.event_type == "isolation_pending":
+                tool_call_id = payload.get("tool_call_id")
+                for index, request in enumerate(projection.pending_isolation_requests):
+                    if request.get("tool_call_id") == tool_call_id:
+                        projection.pending_isolation_requests[index] = copy.deepcopy(payload)
+                        break
+            elif event.event_type in {"isolation_upgrade_completed", "isolation_cancelled"}:
+                tool_call_id = payload.get("tool_call_id")
+                projection.pending_isolation_requests = [
+                    request
+                    for request in projection.pending_isolation_requests
+                    if request.get("tool_call_id") != tool_call_id
+                ]
             elif event.event_type == RuntimeEventType.TOOL_COMPLETED.value:
                 key = (event.turn_id, event.round_index)
                 calls = pending_calls.get(key, [])

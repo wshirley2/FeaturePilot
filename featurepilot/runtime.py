@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from corecoder.agent import Agent, ToolExecutor
@@ -22,6 +22,8 @@ from .repository import RepositoryProfiler
 from .repository.profiler import RepositoryProfile
 from .runtime_contracts import (
     RuntimeMode,
+    RuntimeResultScope,
+    RuntimeResultStatus,
     TaskRuntimeIdentity,
     TaskRuntimePaths,
     TaskRuntimeResult,
@@ -69,6 +71,7 @@ class TaskRuntime:
     session_store: SessionStore | None = None
     session_sink: SessionEventSink | None = None
     base_system_context: str = ""
+    pending_isolation_requests: list[dict[str, object]] = field(default_factory=list)
 
     @property
     def runtime_mode(self) -> RuntimeMode:
@@ -112,7 +115,43 @@ class TaskRuntime:
     ) -> str:
         """Run one controlled Agent turn through the shared Runtime boundary."""
 
-        return self.agent.chat(user_input, cancellation_token=cancellation_token)
+        response = self.agent.chat(user_input, cancellation_token=cancellation_token)
+        take_pending = getattr(self.agent.tool_executor, "take_pending_isolation_request", None)
+        pending = take_pending() if callable(take_pending) else None
+        if isinstance(pending, dict):
+            pending["user_request"] = user_input
+            self.pending_isolation_requests.append(pending)
+            if self.session_sink is not None:
+                self.session_sink.record("isolation_pending", self.agent.session_id, pending)
+            self.record_result(TaskRuntimeResult(
+                scope=RuntimeResultScope.TURN,
+                status=RuntimeResultStatus.ESCALATION_REQUIRED,
+                response=response,
+                reason=str(pending.get("message") or "Execution requires isolation"),
+            ))
+        return response
+
+    def record_isolation_event(
+        self,
+        event_type: str,
+        tool_call_id: str,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        """Persist a user decision about one pending Chat isolation request."""
+
+        if self.session_sink is not None:
+            self.session_sink.record(event_type, self.agent.session_id, {
+                "tool_call_id": tool_call_id,
+                **dict(payload or {}),
+            })
+
+    def resolve_pending_isolation(self, tool_call_id: str) -> None:
+        """Remove only an accepted or cancelled request from the live projection."""
+
+        self.pending_isolation_requests = [
+            item for item in self.pending_isolation_requests
+            if item.get("tool_call_id") != tool_call_id
+        ]
 
     def ensure_persisted(self) -> None:
         """Require the latest Runtime and Session facts to be durable."""
@@ -156,6 +195,9 @@ class TaskRuntime:
             # Grants are intentionally process-local. A resumed session always
             # reuses C3's Trusted Diff and fresh approval path.
             self.permission_manager.clear_session_grants()
+        set_task_id = getattr(self.agent.tool_executor, "set_task_id", None)
+        if callable(set_task_id):
+            set_task_id(projection.task_id)
         if self.session_sink is not None:
             self.session_sink.last_result = projection.last_result
             self.session_sink.record("session_resumed", projection.session_id, {
@@ -163,6 +205,7 @@ class TaskRuntime:
                 "event_count": len(projection.events),
                 "warnings": projection.warnings,
             })
+        self.pending_isolation_requests = list(projection.pending_isolation_requests)
         return projection
 
 
@@ -254,7 +297,7 @@ class RuntimeBootstrap:
                 ChatPermissionPolicy(profile.validation_commands if profile else ()),
                 inputs.permission_prompt or DenyPermissionPrompt(),
             )
-            tool_executor = RepositoryToolExecutor(repository, permission_manager)
+            tool_executor = RepositoryToolExecutor(repository, permission_manager, task_id=inputs.task_id)
         session_id = resume_projection.session_id if resume_projection is not None else None
         session_sink = SessionEventSink(session_store, inputs.event_sink)
         agent = Agent(

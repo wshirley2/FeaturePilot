@@ -33,6 +33,14 @@ def _request(**overrides) -> NormalizedToolRequest:
     ("normalized_request", "expected", "reason_code"),
     [
         (_request(), RequiredControl.DIRECT, ControlReasonCode.REPOSITORY_READ),
+        (
+            _request(
+                affected_paths=("pyproject.toml",),
+                file_categories=frozenset({FileCategory.DEPENDENCY_MANIFEST}),
+            ),
+            RequiredControl.DIRECT,
+            ControlReasonCode.REPOSITORY_READ,
+        ),
         (_request(tool_name="grep", operation=OperationKind.SEARCH), RequiredControl.DIRECT, ControlReasonCode.REPOSITORY_SEARCH),
         (
             _request(
@@ -51,6 +59,15 @@ def _request(**overrides) -> NormalizedToolRequest:
             ),
             RequiredControl.DIRECT,
             ControlReasonCode.SAFE_TEST_OR_LINT,
+        ),
+        (
+            _request(
+                tool_name="bash",
+                operation=OperationKind.COMMAND,
+                command=NormalizedCommand(("dir",), CommandKind.READ_ONLY_SHELL),
+            ),
+            RequiredControl.DIRECT,
+            ControlReasonCode.READ_ONLY_SHELL,
         ),
         (
             _request(
@@ -79,6 +96,27 @@ def test_direct_and_confirm_controls_are_explained(normalized_request, expected,
     assert assessment.required_control is expected
     assert any(reason.code is reason_code for reason in assessment.reasons)
     assert all(reason.evidence for reason in assessment.reasons)
+
+
+@pytest.mark.parametrize(
+    ("path", "category", "isolate_reason"),
+    [
+        ("pyproject.toml", FileCategory.DEPENDENCY_MANIFEST, ControlReasonCode.DEPENDENCY_MANIFEST),
+        ("poetry.lock", FileCategory.LOCK_FILE, ControlReasonCode.LOCK_FILE),
+        ("migrations/001.sql", FileCategory.DATABASE_MIGRATION, ControlReasonCode.DATABASE_MIGRATION),
+        ("deploy/app.yaml", FileCategory.DEPLOYMENT_CONFIG, ControlReasonCode.DEPLOYMENT_CONFIG),
+        (".github/workflows/check.yml", FileCategory.CI_CONFIG, ControlReasonCode.CI_CONFIG),
+    ],
+)
+def test_reading_special_files_does_not_require_isolation(path, category, isolate_reason):
+    assessment = ExecutionControlPolicy().assess(_request(
+        affected_paths=(path,),
+        file_categories=frozenset({category}),
+    ))
+
+    assert assessment.required_control is RequiredControl.DIRECT
+    assert ControlReasonCode.REPOSITORY_READ in {reason.code for reason in assessment.reasons}
+    assert isolate_reason not in {reason.code for reason in assessment.reasons}
 
 
 @pytest.mark.parametrize(

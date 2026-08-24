@@ -12,15 +12,18 @@ from types import SimpleNamespace
 from prompt_toolkit.document import Document
 from rich.console import Console
 
-from corecoder.events import RuntimeEvent, RuntimeEventType
+from corecoder.events import NullEventSink, RuntimeEvent, RuntimeEventType
 from corecoder.llm import LLMResponse, ToolCall
 from corecoder.permissions import PermissionDecision
 from featurepilot.chat import ChatSession, SlashCommandCompleter, TerminalEventSink
 from featurepilot.chat_executor import RepositoryToolExecutor
 from featurepilot.cli import _normalize_command
+from featurepilot.managed import ManagedRunService
 from featurepilot.path_policy import ignored_child_names
+from featurepilot.planning import PlanStore
 from featurepilot.runtime import ChatRuntime, RuntimeBootstrap, RuntimeBootstrapInput, TaskRuntime
-from featurepilot.runtime_contracts import RuntimeMode
+from featurepilot.runtime_contracts import RuntimeMode, RuntimeResultStatus
+from featurepilot.workspace import CopyWorkspaceBackend, WorkspaceService
 
 BENCHMARK_ROOT = Path(__file__).parents[2] / "benchmarks" / "cli_data_tool"
 
@@ -162,6 +165,7 @@ def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(tm
     assert "This is a lightweight profile" in runtime.agent._system
     assert "Product: FeaturePilot" in runtime.agent._system
     assert f"Current model: {runtime.config.model}" in runtime.agent._system
+    assert "use cmd-compatible commands such as `dir`, not Unix commands such as `ls -la`" in runtime.agent._system
     assert {tool.name for tool in runtime.tools} == {
         "read_file",
         "glob",
@@ -243,6 +247,47 @@ def test_chat_read_only_inspects_benchmark_without_modifying_files(tmp_path, mon
     assert (repository / read_path).read_bytes() == original
     assert "← read_file: completed" in output.getvalue()
     assert len(provider.requests) == 2
+
+
+def test_chat_reads_dependency_manifest_directly_without_prompting_or_isolating(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = copy_benchmark(tmp_path / "cli_data_tool")
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall("read-manifest", "read_file", {"file_path": "pyproject.toml"})]),
+        LLMResponse(content="依赖配置已读取。"),
+    ])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    prompt = DenyPrompt()
+    runtime = make_runtime(repository, provider, console, permission_prompt=prompt)
+    inputs = iter(["读取 pyproject.toml，不要修改文件", "/exit"])
+
+    assert ChatSession(runtime, console=console, input_fn=lambda prompt: next(inputs)).run() == 0
+
+    rendered = output.getvalue()
+    assert "← read_file: completed" in rendered
+    assert "需要隔离执行" not in rendered
+    assert prompt.requests == []
+
+
+def test_chat_directory_listing_command_executes_directly_without_prompting(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = copy_benchmark(tmp_path / "cli_data_tool")
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall("list-files", "bash", {"command": "dir"})]),
+        LLMResponse(content="目录已列出。"),
+    ])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None, width=120)
+    prompt = DenyPrompt()
+    runtime = make_runtime(repository, provider, console, permission_prompt=prompt)
+    inputs = iter(["列出当前目录文件", "/exit"])
+
+    assert ChatSession(runtime, console=console, input_fn=lambda prompt: next(inputs)).run() == 0
+
+    rendered = output.getvalue()
+    assert "← bash: completed" in rendered
+    assert prompt.requests == []
 
 
 def test_chat_end_to_end_reads_edits_validates_and_continues_without_network(tmp_path, monkeypatch):
@@ -328,7 +373,7 @@ def test_rejected_write_stops_the_current_turn_without_retrying_tools(tmp_path, 
     assert "edit_file: denied" in output.getvalue()
 
 
-def test_policy_denial_still_allows_a_safe_explanation_from_the_agent(tmp_path, monkeypatch):
+def test_blocked_command_stops_the_turn_without_a_retry(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     provider = FakeProvider([
         LLMResponse(tool_calls=[ToolCall(
@@ -336,17 +381,304 @@ def test_policy_denial_still_allows_a_safe_explanation_from_the_agent(tmp_path, 
             "bash",
             {"command": "git reset --hard"},
         )]),
-        LLMResponse(content="该危险命令已被系统拦截，未执行。"),
     ])
     output = StringIO()
     console = Console(file=output, force_terminal=False, color_system=None)
     runtime = make_runtime(tmp_path, provider, console)
 
-    response = runtime.agent.chat("执行 git reset --hard")
+    response = runtime.run_turn("执行 git reset --hard")
 
-    assert response == "该危险命令已被系统拦截，未执行。"
-    assert len(provider.requests) == 2
+    assert "该操作已被阻断，未执行" in response
+    assert len(provider.requests) == 1
     assert "bash: denied" in output.getvalue()
+    assert "git reset --hard" in runtime.agent.messages[-2]["content"]
+    saved = runtime.session_store.replay(runtime.agent.session_id)
+    assessment = next(event for event in saved.events if event.event_type == "execution_control_assessed")
+    assert assessment.payload["required_control"] == "block"
+    assert assessment.tool_call_id == "dangerous-command"
+    assert assessment.payload["reasons"][0]["evidence"]
+
+
+def test_chat_execution_control_assesses_direct_and_confirm_before_effects(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    target = tmp_path / "notes.py"
+    target.write_text("before\n", encoding="utf-8")
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall("read-1", "read_file", {"file_path": "notes.py"})]),
+        LLMResponse(tool_calls=[ToolCall("write-1", "write_file", {"file_path": "notes.py", "content": "after\n"})]),
+        LLMResponse(content="完成。"),
+    ])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    runtime = make_runtime(tmp_path, provider, console, permission_prompt=AllowOncePrompt())
+
+    assert runtime.run_turn("先读取").startswith("完成")
+    assert target.read_text(encoding="utf-8") == "after\n"
+    events = runtime.session_store.replay(runtime.agent.session_id).events
+    assessments = [event for event in events if event.event_type == "execution_control_assessed"]
+
+    assert [event.payload["required_control"] for event in assessments] == ["direct", "confirm"]
+    assert all(event.session_id == runtime.agent.session_id and event.turn_id for event in assessments)
+    assert all(event.tool_call_id and event.payload["reasons"] for event in assessments)
+
+
+def test_isolate_is_unexecuted_persisted_and_visible_after_resume(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    lock_file = tmp_path / "poetry.lock"
+    lock_file.write_text("original\n", encoding="utf-8")
+    provider = FakeProvider([LLMResponse(tool_calls=[ToolCall(
+        "lock-write",
+        "write_file",
+        {"file_path": "poetry.lock", "content": "changed\n"},
+    )])])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    prompt = AllowOncePrompt()
+    runtime = RuntimeBootstrap(provider_factory=lambda config: provider).build(RuntimeBootstrapInput(
+        repository=tmp_path,
+        event_sink=TerminalEventSink(console),
+        permission_prompt=prompt,
+        session_directory=tmp_path / "sessions",
+        task_id="chat-task-1",
+    ))
+
+    response = runtime.run_turn("更新锁文件")
+    runtime.ensure_persisted()
+
+    assert "需要隔离执行" in response
+    assert "源仓库未修改" in output.getvalue()
+    assert "可选择在隔离 Workspace 中继续" in output.getvalue()
+    assert lock_file.read_text(encoding="utf-8") == "original\n"
+    assert prompt.requests == []
+    assert len(provider.requests) == 1
+    assert runtime.last_result is not None
+    assert runtime.last_result.status is RuntimeResultStatus.ESCALATION_REQUIRED
+    assert len(runtime.pending_isolation_requests) == 1
+    saved = runtime.session_store.replay(runtime.agent.session_id)
+    assessment = next(event for event in saved.events if event.event_type == "execution_control_assessed")
+    assert assessment.payload["required_control"] == "isolate"
+    assert assessment.payload["task_id"] == "chat-task-1"
+    assert saved.pending_isolation_requests[0]["tool_call_id"] == "lock-write"
+    assert saved.last_result is not None
+    assert saved.last_result.status is RuntimeResultStatus.ESCALATION_REQUIRED
+
+    ChatSession(runtime, console=console)._session_command("show")
+    assert "Last result: 需要隔离执行（本轮未执行）" in output.getvalue()
+
+    resumed_provider = FakeProvider([])
+    resumed = RuntimeBootstrap(provider_factory=lambda config: resumed_provider).build(RuntimeBootstrapInput(
+        repository=tmp_path,
+        event_sink=TerminalEventSink(Console(file=StringIO(), force_terminal=False, color_system=None)),
+        session_directory=tmp_path / "sessions",
+        resume_session_id=runtime.agent.session_id,
+    ))
+
+    assert resumed.pending_isolation_requests == saved.pending_isolation_requests
+    assert lock_file.read_text(encoding="utf-8") == "original\n"
+    assert resumed_provider.requests == []
+
+
+def _isolation_service(tmp_path: Path, provider: FakeProvider) -> ManagedRunService:
+    return ManagedRunService(
+        plan_store=PlanStore(tmp_path / "plans"),
+        workspace_service=WorkspaceService(CopyWorkspaceBackend(tmp_path / "runs")),
+        runtime_bootstrap=RuntimeBootstrap(provider_factory=lambda _config: provider),
+        event_sink=NullEventSink(),
+    )
+
+
+def test_chat_can_upgrade_an_isolated_write_without_touching_source_or_replaying_after_resume(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    lock_file = tmp_path / "poetry.lock"
+    lock_file.write_text("original\n", encoding="utf-8")
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "lock-write",
+            "write_file",
+            {"file_path": "poetry.lock", "content": "isolated\n"},
+        )]),
+        LLMResponse(tool_calls=[ToolCall(
+            "workspace-write",
+            "write_file",
+            {"file_path": "poetry.lock", "content": "isolated\n"},
+        )]),
+        LLMResponse(content="隔离副本已更新。"),
+    ])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    runtime = make_runtime(tmp_path, provider, console, session_directory=tmp_path / "sessions")
+    inputs = iter(["更新锁文件", "1", "/exit"])
+
+    assert ChatSession(
+        runtime,
+        console=console,
+        input_fn=lambda _prompt: next(inputs),
+        isolation_service=_isolation_service(tmp_path, provider),
+    ).run() == 0
+
+    assert lock_file.read_text(encoding="utf-8") == "original\n"
+    workspaces = list((tmp_path / "runs").glob("*/workspace"))
+    assert len(workspaces) == 1
+    assert (workspaces[0] / "poetry.lock").read_text(encoding="utf-8") == "isolated\n"
+    run_directory = workspaces[0].parent
+    assert (run_directory / "changes.patch").is_file()
+    assert (run_directory / "validation.json").is_file()
+    assert (run_directory / "report.md").is_file()
+    assert (run_directory / "events.jsonl").is_file()
+    assert runtime.pending_isolation_requests == []
+    assert len(provider.requests) == 3
+    rendered = output.getvalue()
+    assert "需要隔离执行" in rendered
+    assert "隔离执行已结束" in rendered
+    assert "源仓库未修改" in rendered
+
+    saved = runtime.session_store.replay(runtime.agent.session_id)
+    assert saved.pending_isolation_requests == []
+    assert any(event.event_type == "isolation_upgrade_completed" for event in saved.events)
+    resumed_provider = FakeProvider([])
+    resumed = RuntimeBootstrap(provider_factory=lambda _config: resumed_provider).build(RuntimeBootstrapInput(
+        repository=tmp_path,
+        event_sink=TerminalEventSink(Console(file=StringIO(), force_terminal=False, color_system=None)),
+        session_directory=tmp_path / "sessions",
+        resume_session_id=runtime.agent.session_id,
+    ))
+    assert resumed.pending_isolation_requests == []
+    assert resumed_provider.requests == []
+
+
+def test_chat_can_keep_or_cancel_an_isolated_request_without_creating_a_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    lock_file = tmp_path / "poetry.lock"
+    lock_file.write_text("original\n", encoding="utf-8")
+    for choice, expected_pending in (("2", 1), ("0", 0)):
+        provider = FakeProvider([LLMResponse(tool_calls=[ToolCall(
+            f"lock-write-{choice}",
+            "write_file",
+            {"file_path": "poetry.lock", "content": "changed\n"},
+        )])])
+        output = StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        session_directory = tmp_path / f"sessions-{choice}"
+        runtime = make_runtime(tmp_path, provider, console, session_directory=session_directory)
+        inputs = iter(["更新锁文件", choice, "/exit"])
+
+        assert ChatSession(
+            runtime,
+            console=console,
+            input_fn=lambda _prompt, active_inputs=inputs: next(active_inputs),
+            isolation_service=_isolation_service(tmp_path / f"service-{choice}", provider),
+        ).run() == 0
+
+        assert lock_file.read_text(encoding="utf-8") == "original\n"
+        assert runtime.pending_isolation_requests == [] if expected_pending == 0 else len(runtime.pending_isolation_requests) == 1
+        assert not (tmp_path / f"service-{choice}" / "runs").exists()
+        saved = runtime.session_store.replay(runtime.agent.session_id)
+        assert len(saved.pending_isolation_requests) == expected_pending
+        if choice == "0":
+            assert any(event.event_type == "isolation_cancelled" for event in saved.events)
+
+
+def test_chat_keeps_pending_isolation_when_workspace_creation_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    lock_file = tmp_path / "poetry.lock"
+    lock_file.write_text("original\n", encoding="utf-8")
+    provider = FakeProvider([LLMResponse(tool_calls=[ToolCall(
+        "lock-write",
+        "write_file",
+        {"file_path": "poetry.lock", "content": "changed\n"},
+    )])])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    runtime = make_runtime(tmp_path, provider, console, session_directory=tmp_path / "sessions")
+    service = _isolation_service(tmp_path, provider)
+
+    def fail_create(_scope):
+        raise OSError("workspace backend unavailable")
+
+    monkeypatch.setattr(service.workspace_service, "create_for_scope", fail_create)
+    inputs = iter(["更新锁文件", "1", "/exit"])
+    assert ChatSession(
+        runtime,
+        console=console,
+        input_fn=lambda _prompt: next(inputs),
+        isolation_service=service,
+    ).run() == 0
+
+    assert lock_file.read_text(encoding="utf-8") == "original\n"
+    assert len(runtime.pending_isolation_requests) == 1
+    assert len(provider.requests) == 1
+    saved = runtime.session_store.replay(runtime.agent.session_id)
+    assert len(saved.pending_isolation_requests) == 1
+    assert any(event.event_type == "isolation_upgrade_failed" for event in saved.events)
+    assert "无法创建或启动隔离执行" in output.getvalue()
+
+
+def test_chat_keeps_pending_isolation_after_agent_failure_and_retains_workspace_artifacts(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    lock_file = tmp_path / "poetry.lock"
+    lock_file.write_text("original\n", encoding="utf-8")
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "lock-write", "write_file", {"file_path": "poetry.lock", "content": "changed\n"},
+        )]),
+        RuntimeError("isolated provider unavailable"),
+    ])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    runtime = make_runtime(tmp_path, provider, console, session_directory=tmp_path / "sessions")
+    inputs = iter(["更新锁文件", "1", "/exit"])
+
+    assert ChatSession(
+        runtime,
+        console=console,
+        input_fn=lambda _prompt: next(inputs),
+        isolation_service=_isolation_service(tmp_path, provider),
+    ).run() == 0
+
+    assert lock_file.read_text(encoding="utf-8") == "original\n"
+    assert len(runtime.pending_isolation_requests) == 1
+    run_directories = list((tmp_path / "runs").glob("*"))
+    assert len(run_directories) == 1
+    assert (run_directories[0] / "changes.patch").is_file()
+    assert (run_directories[0] / "report.md").is_file()
+    assert "隔离执行失败，源仓库未修改" in output.getvalue()
+
+
+def test_chat_returns_to_source_session_after_isolated_validation_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    lock_file = tmp_path / "poetry.lock"
+    lock_file.write_text("original\n", encoding="utf-8")
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "lock-write", "write_file", {"file_path": "poetry.lock", "content": "changed\n"},
+        )]),
+        LLMResponse(tool_calls=[ToolCall(
+            "workspace-write", "write_file", {"file_path": "poetry.lock", "content": "changed\n"},
+        )]),
+        LLMResponse(content="副本已写入。"),
+    ])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    runtime = make_runtime(tmp_path, provider, console, session_directory=tmp_path / "sessions")
+    assert runtime.profile is not None
+    runtime.profile.validation_commands = [[sys.executable, "-c", "import sys; sys.exit(7)"]]
+    inputs = iter(["更新锁文件", "1", "/exit"])
+
+    assert ChatSession(
+        runtime,
+        console=console,
+        input_fn=lambda _prompt: next(inputs),
+        isolation_service=_isolation_service(tmp_path, provider),
+    ).run() == 0
+
+    assert lock_file.read_text(encoding="utf-8") == "original\n"
+    assert runtime.pending_isolation_requests == []
+    run_directory = next((tmp_path / "runs").glob("*") )
+    assert (run_directory / "validation.json").is_file()
+    assert "状态：failed" in output.getvalue()
+    saved = runtime.session_store.replay(runtime.agent.session_id)
+    assert saved.pending_isolation_requests == []
+    assert any(event.event_type == "isolation_upgrade_completed" for event in saved.events)
 
 
 def test_chat_commands_and_eof_are_local_and_do_not_call_provider(monkeypatch, tmp_path):
@@ -370,7 +702,7 @@ def test_chat_commands_and_eof_are_local_and_do_not_call_provider(monkeypatch, t
     assert ChatSession(runtime, console=console, input_fn=input_fn, plan_session=object()).run() == 0
     rendered = output.getvalue()
     assert "FeaturePilot Commands" in rendered
-    assert "先制定计划：<任务>" in rendered
+    assert "操作保护：写入和命令会在执行前按实际影响进行确认、隔离或阻断。" in rendered
     assert "/plan" in rendered
     assert "自动保存已开启" in rendered
     assert "FeaturePilot Sessions" in rendered

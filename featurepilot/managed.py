@@ -10,7 +10,7 @@ from corecoder.events import EventSink
 from corecoder.runtime_control import CancellationToken, RuntimeLimits
 
 from .changes import ChangeArtifact, ChangeService, RepositorySnapshot
-from .domain import PlanRecord, Run
+from .domain import ExecutionScope, PlanRecord, Run
 from .execution import (
     ExecutionContext,
     ValidationArtifact,
@@ -36,7 +36,8 @@ from .workspace import Workspace, WorkspaceService
 class ManagedRunResult:
     """The retained state and final Agent response for a completed Managed Run."""
 
-    record: PlanRecord
+    record: PlanRecord | None
+    scope: ExecutionScope
     run: Run
     workspace: Workspace
     runtime: TaskRuntime
@@ -117,28 +118,53 @@ class ManagedRunService:
         limits: RuntimeLimits | None = None,
         cancellation_token: CancellationToken | None = None,
     ) -> ManagedRunResult:
-        started = time.monotonic()
         record = self.plan_store.load(plan_reference)
         if record.status != "approved":
             raise ValueError(
                 f"Only approved plans can run; current status is {record.status!r}"
             )
 
-        run, workspace = self.workspace_service.create_for_plan(record)
+        return self.execute_scope(
+            ExecutionScope.from_plan(record),
+            record=record,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            limits=limits,
+            cancellation_token=cancellation_token,
+        )
+
+    def execute_scope(
+        self,
+        scope: ExecutionScope,
+        *,
+        record: PlanRecord | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        limits: RuntimeLimits | None = None,
+        cancellation_token: CancellationToken | None = None,
+    ) -> ManagedRunResult:
+        """Execute an already approved Plan or Chat escalation scope in isolation."""
+
+        started = time.monotonic()
+        run, workspace = self.workspace_service.create_for_scope(scope)
+        scope = scope.with_execution(run_id=run.id, workspace_path=workspace.path)
         paths = TaskRuntimePaths.for_runtime(RuntimeMode.MANAGED_RUN, workspace.path)
         event_log = RunEventLog.create_at(run.id, paths.events_path)
         events_path = event_log.path
         event_log.record("run_created", {
-            "plan_reference": record.reference,
-            "plan_id": record.id,
-            "task_id": record.plan.task_id,
+            "plan_reference": record.reference if record is not None else None,
+            "plan_id": scope.plan_id,
+            "task_id": scope.task.id,
+            "execution_scope": scope.to_dict(),
             "workspace": str(workspace.path),
             "source_snapshot": workspace.source_snapshot,
             "runtime_paths": paths.to_dict(),
         })
         managed_sink = ManagedRunEventSink(event_log, self.event_sink)
         baseline = self.change_service.capture(workspace.source_path)
-        context = ExecutionContext(record=record, run=run, workspace=workspace)
+        context = ExecutionContext(scope=scope, run=run, workspace=workspace)
         executor = WorkspaceToolExecutor(context)
         run.transition("running")
         self.workspace_service.save_run(run, paths)
@@ -161,17 +187,17 @@ class ManagedRunService:
                 api_key=api_key,
                 tool_executor=executor,
                 tools=build_featurepilot_tools(),
-                system_context=_managed_system_context(record),
-                permission_mode="approved Plan scope in an isolated Workspace",
+                system_context=_managed_system_context(scope),
+                permission_mode="approved execution scope in an isolated Workspace",
                 mode=RuntimeMode.MANAGED_RUN,
-                task_id=record.plan.task_id,
+                task_id=scope.task.id,
                 run_id=run.id,
                 source_repository=workspace.source_path,
                 limits=limits,
                 paths=paths,
             ))
             response = runtime.run_turn(
-                _managed_task(record),
+                _managed_task(scope),
                 cancellation_token=cancellation_token,
             )
             runtime.ensure_persisted()
@@ -182,7 +208,7 @@ class ManagedRunService:
                 status = runtime.last_result.status.value
                 result_payload = _control_stop_payload(runtime.last_result, response)
                 artifacts = self._finalize_terminal_run(
-                    record=record,
+                    scope=scope,
                     run=run,
                     workspace=workspace,
                     paths=paths,
@@ -205,6 +231,7 @@ class ManagedRunService:
                     )
                 return ManagedRunResult(
                     record=record,
+                    scope=scope,
                     run=run,
                     workspace=workspace,
                     runtime=runtime,
@@ -219,12 +246,12 @@ class ManagedRunService:
                     runtime_result=runtime.last_result,
                 )
             event_log.record("validation_started", {
-                "commands": [list(command) for command in record.plan.validation_commands],
+                "commands": [list(command) for command in scope.validation_commands],
             })
             validation, validation_path = self.validation_service.validate(
                 run.id,
                 workspace.path,
-                record.plan.validation_commands,
+                scope.validation_commands,
                 cancellation_token=cancellation_token,
                 artifact_path=paths.validation_path,
             )
@@ -240,7 +267,7 @@ class ManagedRunService:
                 "error": "Managed Run cancelled by user",
             }
             artifacts = self._finalize_terminal_run(
-                record=record,
+                scope=scope,
                 run=run,
                 workspace=workspace,
                 paths=paths,
@@ -273,7 +300,7 @@ class ManagedRunService:
                 "error": str(error),
             }
             artifacts = self._finalize_terminal_run(
-                record=record,
+                scope=scope,
                 run=run,
                 workspace=workspace,
                 paths=paths,
@@ -324,7 +351,7 @@ class ManagedRunService:
             })
         try:
             artifacts = self._generate_artifacts(
-                record=record,
+                scope=scope,
                 run=run,
                 workspace=workspace,
                 paths=paths,
@@ -395,6 +422,7 @@ class ManagedRunService:
         self.workspace_service.save_run(run, paths)
         return ManagedRunResult(
             record=record,
+            scope=scope,
             run=run,
             workspace=workspace,
             runtime=runtime,
@@ -412,7 +440,7 @@ class ManagedRunService:
     def _finalize_terminal_run(
         self,
         *,
-        record: PlanRecord,
+        scope: ExecutionScope,
         run: Run,
         workspace: Workspace,
         paths: TaskRuntimePaths,
@@ -429,7 +457,7 @@ class ManagedRunService:
     ) -> _GeneratedArtifacts | None:
         try:
             artifacts = self._generate_artifacts(
-                record=record,
+                scope=scope,
                 run=run,
                 workspace=workspace,
                 paths=paths,
@@ -462,7 +490,7 @@ class ManagedRunService:
     def _generate_artifacts(
         self,
         *,
-        record: PlanRecord,
+        scope: ExecutionScope,
         run: Run,
         workspace: Workspace,
         paths: TaskRuntimePaths,
@@ -480,7 +508,7 @@ class ManagedRunService:
         changes, patch_path = self.change_service.generate(
             baseline,
             workspace,
-            record,
+            scope,
             output_path=paths.patch_path,
         )
         event_log.record("changes_generated", {
@@ -493,7 +521,7 @@ class ManagedRunService:
         preview_data.update({"status": status, "result": result_payload})
         preview_run = Run.from_dict(preview_data)
         report_path = self.report_service.generate(
-            record=record,
+            scope=scope,
             run=preview_run,
             workspace=workspace,
             response=response,
@@ -654,41 +682,40 @@ def _attach_runtime_result(
     return runtime_result
 
 
-def _managed_system_context(record: PlanRecord) -> str:
+def _managed_system_context(scope: ExecutionScope) -> str:
     return "\n".join([
-        "You are executing an approved FeaturePilot Managed Run.",
+        "You are executing an approved FeaturePilot isolated run.",
         "Work only inside the isolated Workspace shown as the repository root.",
-        "The injected tool executor enforces the approved Plan; do not attempt to bypass it.",
-        f"Approved Plan: {record.reference}",
+        "The injected tool executor enforces the approved execution scope; do not attempt to bypass it.",
+        f"Execution scope: {scope.reference}",
     ])
 
 
-def _managed_task(record: PlanRecord) -> str:
-    plan = record.plan
-    acceptance = record.task.acceptance_criteria if record.task else []
+def _managed_task(scope: ExecutionScope) -> str:
+    acceptance = scope.task.acceptance_criteria
 
     def section(title: str, values: list[str]) -> list[str]:
         return [title, *(f"- {value}" for value in values)] if values else [title, "- (none)"]
 
     lines = [
-        "Execute the approved implementation Plan below in this isolated Workspace.",
+        "Execute the approved implementation scope below in this isolated Workspace.",
         "Use tools to inspect and implement the task. Do not modify the source repository.",
-        "You may read any file inside the Workspace, but writes are limited to the approved Plan scope.",
+        "You may read any file inside the Workspace, but writes are limited to the approved execution scope.",
         "",
-        f"Task: {record.task.description if record.task else plan.summary}",
-        f"Plan summary: {plan.summary}",
+        f"Task: {scope.task.description}",
+        f"Scope summary: {scope.summary}",
+        f"Trigger: {scope.trigger_reason or 'explicit approval'}",
+        f"Original Tool Call: {scope.trigger_tool_name or '(Plan scope)'} {scope.trigger_arguments}",
         "",
-        *section("Steps:", plan.steps),
+        *section("Steps:", list(scope.steps)),
         "",
-        *section("Plan files to inspect first:", plan.read_files),
+        *section("Approved files to modify:", list(scope.modify_files)),
         "",
-        *section("Approved files to modify:", plan.modify_files),
-        "",
-        *section("Approved files that may be created:", plan.expected_files),
+        *section("Approved files that may be created:", list(scope.expected_files)),
         "",
         *section("Acceptance criteria:", acceptance),
         "",
-        *section("Approved validation commands:", [" ".join(command) for command in plan.validation_commands]),
+        *section("Approved validation commands:", [" ".join(command) for command in scope.validation_commands]),
         "",
         "FeaturePilot will execute every approved validation command after this Agent turn.",
         "Do not invoke validation commands yourself; finish the implementation and return your summary.",

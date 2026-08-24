@@ -58,6 +58,7 @@ _READ_ONLY_GIT = {
     "show",
     "status",
 }
+_READ_ONLY_SHELL = {"dir"}
 _SHELL_OPERATORS = {"&", "&&", "|", "||", ";", ">", ">>", "<", "<<"}
 
 
@@ -96,6 +97,8 @@ class ChatPermissionPolicy:
             return PermissionDecision.ask("Compound shell commands require approval")
         if _is_read_only_git(tokens):
             return PermissionDecision.allow("Read-only Git command is allowed")
+        if _is_read_only_shell(tokens):
+            return PermissionDecision.allow("Read-only directory listing command is allowed")
         if _is_test_or_lint(tokens):
             return PermissionDecision.allow("Test or lint command is allowed")
         if _is_install(tokens):
@@ -233,6 +236,11 @@ def _is_read_only_git(tokens: Sequence[str]) -> bool:
         and len(names) > 2
         and not all(value.startswith("-") for value in tokens[2:])
     )
+
+
+def _is_read_only_shell(tokens: Sequence[str]) -> bool:
+    names = [_command_name(token) for token in tokens]
+    return bool(names) and names[0] in _READ_ONLY_SHELL
 
 
 def _is_test_or_lint(tokens: Sequence[str]) -> bool:

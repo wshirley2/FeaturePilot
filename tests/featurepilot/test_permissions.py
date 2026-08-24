@@ -255,6 +255,7 @@ def test_file_session_grant_allows_later_write_to_same_path(tmp_path):
     ("command", "expected"),
     [
         ("git status --short", PermissionAction.ALLOW),
+        ("dir", PermissionAction.ALLOW),
         ("git diff --output=patch.txt", PermissionAction.ASK),
         ("python -m pytest -q", PermissionAction.ALLOW),
         ("python -m ruff check .", PermissionAction.ALLOW),
@@ -297,10 +298,9 @@ def test_command_prefix_grant_executes_later_matching_command_without_prompt(tmp
     assert len(prompt.requests) == 1
 
 
-def test_command_prefix_grant_never_covers_a_later_compound_command(tmp_path):
+def test_command_prefix_grant_never_reaches_a_later_blocked_compound_command(tmp_path):
     prompt = RecordingPrompt(
         PermissionDecision.allow("prefix", PermissionGrantScope.PREFIX),
-        PermissionDecision.deny("compound denied"),
     )
     executor = RepositoryToolExecutor(
         tmp_path,
@@ -311,9 +311,9 @@ def test_command_prefix_grant_never_covers_a_later_compound_command(tmp_path):
     assert executor.execute(bash, {"command": "echo first"}) == "ran: echo first"
     result = executor.execute(bash, {"command": "echo second && del notes.txt"})
 
-    assert result == "Permission denied bash: compound denied"
+    assert result.startswith("Policy denied bash: 该操作已被阻断，未执行")
     assert [item[0] for item in bash.commands] == ["echo first"]
-    assert len(prompt.requests) == 2
+    assert len(prompt.requests) == 1
 
 
 def test_terminal_permission_prompt_is_independently_testable():
