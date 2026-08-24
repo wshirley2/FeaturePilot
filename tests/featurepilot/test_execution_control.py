@@ -76,6 +76,15 @@ def _request(**overrides) -> NormalizedToolRequest:
         ),
         (
             _request(
+                tool_name="bash",
+                operation=OperationKind.COMMAND,
+                command=NormalizedCommand(("ls", "-la"), CommandKind.READ_ONLY_SHELL),
+            ),
+            RequiredControl.DIRECT,
+            ControlReasonCode.READ_ONLY_SHELL,
+        ),
+        (
+            _request(
                 tool_name="write_file",
                 operation=OperationKind.WRITE,
                 affected_paths=("src/app.py",),

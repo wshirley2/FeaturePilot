@@ -274,8 +274,9 @@ def test_chat_reads_dependency_manifest_directly_without_prompting_or_isolating(
 def test_chat_directory_listing_command_executes_directly_without_prompting(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     repository = copy_benchmark(tmp_path / "cli_data_tool")
+    directory_command = "dir" if sys.platform == "win32" else "ls -la"
     provider = FakeProvider([
-        LLMResponse(tool_calls=[ToolCall("list-files", "bash", {"command": "dir"})]),
+        LLMResponse(tool_calls=[ToolCall("list-files", "bash", {"command": directory_command})]),
         LLMResponse(content="目录已列出。"),
     ])
     output = StringIO()
