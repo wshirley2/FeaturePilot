@@ -416,8 +416,11 @@ def _command_kind(tokens: tuple[str, ...], has_fix: bool) -> CommandKind:
     names = tuple(Path(token).name.lower() for token in tokens)
     if names[:1] == ("dir",):
         return CommandKind.READ_ONLY_SHELL
-    if len(names) >= 2 and names[0] == "git" and names[1] == "push":
+    git_subcommand = _git_subcommand(names)
+    if git_subcommand == "push":
         return CommandKind.PUSH
+    if git_subcommand in {"apply", "am"}:
+        return CommandKind.PATCH_APPLY
     if "publish" in names:
         return CommandKind.PUBLISH
     if any(name in {"protoc", "openapi-generator", "datamodel-codegen"} for name in names):
@@ -431,6 +434,26 @@ def _command_kind(tokens: tuple[str, ...], has_fix: bool) -> CommandKind:
     if any(name in {"pytest", "ruff", "flake8", "mypy", "eslint", "pylint", "vitest", "jest"} for name in names):
         return CommandKind.TEST if any(name in {"pytest", "vitest", "jest"} for name in names) else CommandKind.LINT
     return CommandKind.GENERAL
+
+
+def _git_subcommand(names: tuple[str, ...]) -> str | None:
+    """Return a Git subcommand while tolerating its global path options."""
+
+    if names[:1] != ("git",):
+        return None
+    option_with_value = {"-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"}
+    skip_value = False
+    for name in names[1:]:
+        if skip_value:
+            skip_value = False
+            continue
+        if name in option_with_value:
+            skip_value = True
+            continue
+        if name.startswith("-"):
+            continue
+        return name
+    return None
 
 
 def _operation_kind(tool_name: str, command: NormalizedCommand | None) -> OperationKind:

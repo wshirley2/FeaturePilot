@@ -747,6 +747,9 @@ class ChatSession:
                 f"Patch: {result.patch_path}",
                 f"Report: {result.report_path}",
                 "The source repository remains unchanged; further Chat tools target it, not the Workspace.",
+                "Patch, validation, report, and events are review artifacts only.",
+                "FeaturePilot does not yet support controlled source promotion for this isolated Chat run.",
+                "Do not suggest or invoke git apply, git am, or another command to copy this Patch into the source repository.",
             ]),
         })
 

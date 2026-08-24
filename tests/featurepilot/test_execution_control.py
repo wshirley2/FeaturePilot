@@ -298,6 +298,14 @@ def test_isolate_controls_are_explained(normalized_request, reason_code):
             ),
             ControlReasonCode.UNSUPPORTED_EXTERNAL_EFFECT,
         ),
+        (
+            _request(
+                tool_name="bash",
+                operation=OperationKind.COMMAND,
+                command=NormalizedCommand(("git", "apply", "changes.patch"), CommandKind.PATCH_APPLY),
+            ),
+            ControlReasonCode.UNSUPPORTED_PATCH_APPLICATION,
+        ),
     ],
 )
 def test_block_controls_are_explained(normalized_request, reason_code):

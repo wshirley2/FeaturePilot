@@ -399,6 +399,52 @@ def test_blocked_command_stops_the_turn_without_a_retry(tmp_path, monkeypatch):
     assert assessment.payload["reasons"][0]["evidence"]
 
 
+def test_chat_blocks_patch_application_without_a_source_promotion_capability(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    target = tmp_path / "notes.txt"
+    target.write_text("original\n", encoding="utf-8")
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "apply-patch",
+            "bash",
+            {"command": "git apply changes.patch"},
+        )]),
+    ])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    runtime = make_runtime(tmp_path, provider, console)
+
+    response = runtime.run_turn("把审查 Patch 应用到源仓库")
+
+    assert "该操作已被阻断，未执行" in response
+    assert "将 Patch 回写源仓库需要专用、可审查的应用能力" in response
+    assert target.read_text(encoding="utf-8") == "original\n"
+    assert len(provider.requests) == 1
+    saved = runtime.session_store.replay(runtime.agent.session_id)
+    assessment = next(event for event in saved.events if event.event_type == "execution_control_assessed")
+    assert assessment.payload["required_control"] == "block"
+    assert assessment.payload["reasons"][0]["code"] == "unsupported_patch_application"
+
+
+def test_chat_blocks_patch_application_with_git_global_path_options(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "apply-patch-in-worktree",
+            "bash",
+            {"command": "git -C . apply changes.patch"},
+        )]),
+    ])
+    runtime = make_runtime(tmp_path, provider, Console(file=StringIO(), force_terminal=False, color_system=None))
+
+    response = runtime.run_turn("在当前工作目录应用审查 Patch")
+
+    assert "该操作已被阻断，未执行" in response
+    saved = runtime.session_store.replay(runtime.agent.session_id)
+    assessment = next(event for event in saved.events if event.event_type == "execution_control_assessed")
+    assert assessment.payload["reasons"][0]["code"] == "unsupported_patch_application"
+
+
 def test_chat_execution_control_assesses_direct_and_confirm_before_effects(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     target = tmp_path / "notes.py"

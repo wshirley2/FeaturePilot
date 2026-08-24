@@ -86,6 +86,7 @@ class CommandKind(str, Enum):
     CODE_GENERATION = "code_generation"
     PUBLISH = "publish"
     PUSH = "push"
+    PATCH_APPLY = "patch_apply"
 
 
 class ExternalEffect(str, Enum):
@@ -117,6 +118,7 @@ class ControlReasonCode(str, Enum):
     COMPLEX_COMMAND = "complex_command"
     UNPARSEABLE_COMMAND = "unparseable_command"
     UNSUPPORTED_EXTERNAL_EFFECT = "unsupported_external_effect"
+    UNSUPPORTED_PATCH_APPLICATION = "unsupported_patch_application"
     MULTI_FILE_SCOPE = "multi_file_scope"
     DIRECTORY_SCOPE = "directory_scope"
     UNKNOWN_SCOPE = "unknown_scope"
@@ -290,6 +292,14 @@ class ExecutionControlPolicy:
                 RequiredControl.BLOCK,
                 "Destructive Git cleanup is always blocked",
                 f"command={command.display}",
+            ))
+        if command.kind is CommandKind.PATCH_APPLY:
+            reasons.append(self._reason(
+                ControlReasonCode.UNSUPPORTED_PATCH_APPLICATION,
+                RequiredControl.BLOCK,
+                "将 Patch 回写源仓库需要专用、可审查的应用能力",
+                f"command={command.display}",
+                "capability=reviewed_source_promotion",
             ))
         if command.kind in {CommandKind.PUBLISH, CommandKind.PUSH}:
             reasons.append(self._reason(
