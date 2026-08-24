@@ -1,4 +1,4 @@
-"""Approved execution facts shared by Plan and Chat isolation paths."""
+"""Approved execution facts for explicit advanced isolated execution."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ from .task import Task
 class ExecutionScope:
     """The bounded facts authorised for one isolated execution attempt.
 
-    A scope is not a Plan. A saved, approved Plan can be adapted to one, while
-    a Chat escalation records only the concrete Tool Call approved for an
-    isolated Workspace.
+    A scope is not a Plan. A saved, approved Plan can be adapted to one.
+    The legacy Chat-escalation factory remains readable for persisted
+    compatibility, but ordinary Chat no longer creates isolated scopes.
     """
 
     task: Task
@@ -101,7 +101,11 @@ class ExecutionScope:
         validation_commands: list[list[str]] | tuple[tuple[str, ...], ...] = (),
         trigger_reason: str,
     ) -> ExecutionScope:
-        """Create a narrow scope from the unexecuted Chat Tool Call."""
+        """Create a legacy-compatible scope from an unexecuted Chat Tool Call.
+
+        Ordinary Chat no longer invokes this factory; it remains so historical
+        records and explicit integrations retain a stable domain shape.
+        """
 
         paths = tuple(
             str(path)

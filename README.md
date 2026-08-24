@@ -82,26 +82,6 @@ git diff -- benchmarks\cli_data_tool\README.md
 
 这条路径直接操作你指定的仓库，适合代码阅读、问答和小范围修改。
 
-## 需要先审查时
-
-通常直接在对话中完成任务就够了。如果你希望先审查变更范围、再在副本中执行，可以先说：
-
-```text
-先制定计划：为 export 命令增加 --format json，同时保持默认 text 输出不变。
-```
-
-FeaturePilot 会生成一份草稿，列出预计读取和修改的文件、验证命令和验收条件。此时不会创建副本，也不会改代码。
-
-只有明确输入：
-
-```text
-批准并执行
-```
-
-系统才会创建隔离 Workspace，并在副本中完成修改和验证。源仓库不会被直接改动。
-
-批准后，系统会创建隔离副本，在其中修改和验证；源仓库不会被直接改动。完成后会保留补丁、验证结果和任务报告，方便审查或继续处理。
-
 ## Session 与恢复
 
 Chat 会自动保存会话事件。默认位置是：
@@ -151,11 +131,11 @@ featurepilot benchmarks\cli_data_tool --max-tool-rounds 1
 FeaturePilot 对操作做三类判断：允许、询问、拒绝。
 
 - 仓库内读取、搜索、只读 Git、测试和 Lint 可按规则直接允许；
-- 文件写入、安装依赖、网络访问、普通删除和未知命令需要确认；
-- 强制递归删除、破坏性 Git 等高风险操作会直接拒绝；
+- 文件写入（包括依赖清单、lock 文件、迁移、CI/部署配置）、安装依赖、网络访问和可解析的一般命令需要确认；
+- 删除、批量移动或重命名、仓库外写入、破坏性 Git、复杂 Shell 结构以及发布/推送会直接拒绝；
 - 用户拒绝一次有副作用的操作后，当前 Agent 回合会结束，不会换一种写法反复申请。
 
-这是一套交互和执行策略，不是容器级隔离。经你允许的 Shell 命令仍会在本机运行，请只对可信仓库使用。高级隔离执行使用的 Workspace 是任务副本，也不能替代操作系统沙箱。
+这是一套交互和执行策略，不是系统级沙箱。经你允许的 Shell 命令仍会在本机运行，请只对可信仓库使用。
 
 更多命令和参数可通过 `featurepilot --help` 或各子命令的 `--help` 查看。
 
@@ -164,9 +144,8 @@ FeaturePilot 对操作做三类判断：允许、询问、拒绝。
 - Shell 命令有路径策略和危险命令拦截，但没有系统级沙箱；
 - 不同模型对标准 Tool Calling 的支持程度不同；
 - 超长 Session 仍会在恢复时构建完整事件和消息，按需加载尚未实现；
-- 自动判断何时应切换到隔离副本的机制仍在开发中；当前需要你主动选择“先制定计划”；
 - 当前产品重心是本地 CLI，不包含 Web、多用户协作或 MCP 平台能力。
 
 ## 来源与许可
 
-项目早期基于 [CoreCoder](https://github.com/he-yufeng/CoreCoder) 的最小 AgentLoop 继续开发；现阶段主要代码集中在 FeaturePilot 的 Runtime、权限、Session、Chat、Plan/高级隔离执行和 CLI。原版权声明与 MIT 许可证保留在 [LICENSE](LICENSE) 中。
+项目早期基于 [CoreCoder](https://github.com/he-yufeng/CoreCoder) 的最小 AgentLoop 继续开发；现阶段主要代码集中在 FeaturePilot 的 Runtime、权限、Session、Chat 和 CLI。原版权声明与 MIT 许可证保留在 [LICENSE](LICENSE) 中。

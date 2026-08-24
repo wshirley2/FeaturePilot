@@ -154,9 +154,6 @@ def test_reading_special_files_does_not_require_isolation(path, category, isolat
             ),
             ControlReasonCode.DIRECTORY_SCOPE,
         ),
-        (_request(tool_name="delete_file", operation=OperationKind.DELETE), ControlReasonCode.DELETE_OPERATION),
-        (_request(tool_name="move_file", operation=OperationKind.MOVE), ControlReasonCode.BULK_MOVE_OR_RENAME),
-        (_request(tool_name="rename_file", operation=OperationKind.RENAME), ControlReasonCode.BULK_MOVE_OR_RENAME),
         (
             _request(
                 tool_name="write_file",
@@ -220,10 +217,10 @@ def test_reading_special_files_does_not_require_isolation(path, category, isolat
         ),
     ],
 )
-def test_isolate_controls_are_explained(normalized_request, reason_code):
+def test_high_impact_confirm_controls_are_explained(normalized_request, reason_code):
     assessment = ExecutionControlPolicy().assess(normalized_request)
 
-    assert assessment.required_control is RequiredControl.ISOLATE
+    assert assessment.required_control is RequiredControl.CONFIRM
     assert any(reason.code is reason_code for reason in assessment.reasons)
     assert all(reason.evidence for reason in assessment.reasons)
 
@@ -325,7 +322,36 @@ def test_block_controls_are_explained(normalized_request, reason_code):
     assert all(reason.evidence for reason in assessment.reasons)
 
 
-def test_block_wins_over_isolate_and_preserves_all_explanations():
+@pytest.mark.parametrize(
+    ("normalized_request", "reason_code"),
+    [
+        (
+            _request(
+                tool_name="bash",
+                operation=OperationKind.DELETE,
+                command=NormalizedCommand(("rm", "obsolete.py"), CommandKind.GENERAL),
+            ),
+            ControlReasonCode.DELETE_OPERATION,
+        ),
+        (
+            _request(
+                tool_name="bash",
+                operation=OperationKind.MOVE,
+                command=NormalizedCommand(("git", "mv", "old.py", "new.py"), CommandKind.GENERAL),
+            ),
+            ControlReasonCode.BULK_MOVE_OR_RENAME,
+        ),
+    ],
+)
+def test_destructive_repository_changes_are_blocked(normalized_request, reason_code):
+    assessment = ExecutionControlPolicy().assess(normalized_request)
+
+    assert assessment.required_control is RequiredControl.BLOCK
+    assert any(reason.code is reason_code for reason in assessment.reasons)
+    assert all(reason.evidence for reason in assessment.reasons)
+
+
+def test_block_wins_over_high_impact_confirm_and_preserves_all_explanations():
     assessment = ExecutionControlPolicy().assess(_request(
         tool_name="write_file",
         operation=OperationKind.WRITE,
@@ -355,7 +381,7 @@ def test_block_wins_over_a_normally_direct_repository_read():
     }
 
 
-def test_isolate_wins_over_confirm_and_direct_rules():
+def test_high_impact_confirm_wins_over_direct_write_reason():
     assessment = ExecutionControlPolicy().assess(_request(
         tool_name="write_file",
         operation=OperationKind.WRITE,
@@ -364,7 +390,7 @@ def test_isolate_wins_over_confirm_and_direct_rules():
         file_categories=frozenset({FileCategory.SOURCE}),
     ))
 
-    assert assessment.required_control is RequiredControl.ISOLATE
+    assert assessment.required_control is RequiredControl.CONFIRM
     assert {reason.code for reason in assessment.reasons} >= {
         ControlReasonCode.MULTI_FILE_SCOPE,
         ControlReasonCode.SINGLE_FILE_WRITE,

@@ -17,7 +17,6 @@ class RequiredControl(str, Enum):
 
     DIRECT = "direct"
     CONFIRM = "confirm"
-    ISOLATE = "isolate"
     BLOCK = "block"
 
 
@@ -194,14 +193,13 @@ class ExecutionControlAssessment:
 class ExecutionControlPolicy:
     """Choose the strongest required control from normalized operation facts.
 
-    ``BLOCK > ISOLATE > CONFIRM > DIRECT`` is encoded as precedence, never as a
+    ``BLOCK > CONFIRM > DIRECT`` is encoded as precedence, never as a
     numerical score. The policy only raises control strength; a later integration
     must still enforce Permission, Trusted Diff, path policy, and BLOCK rules.
     """
 
     _PRECEDENCE = (
         RequiredControl.BLOCK,
-        RequiredControl.ISOLATE,
         RequiredControl.CONFIRM,
         RequiredControl.DIRECT,
     )
@@ -210,7 +208,7 @@ class ExecutionControlPolicy:
 
         reasons = [
             *self._block_reasons(request),
-            *self._isolate_reasons(request),
+            *self._high_impact_confirm_reasons(request),
             *self._confirm_reasons(request),
             *self._direct_reasons(request),
         ]
@@ -260,6 +258,29 @@ class ExecutionControlPolicy:
                 RequiredControl.BLOCK,
                 "Publish operations need a dedicated capability",
                 f"operation={request.operation.value}",
+            ))
+        if request.operation is OperationKind.DELETE:
+            reasons.append(self._reason(
+                ControlReasonCode.DELETE_OPERATION,
+                RequiredControl.BLOCK,
+                "Delete operations are blocked in the source repository",
+                f"paths={self._paths_evidence(request)}",
+            ))
+        if request.operation in {OperationKind.MOVE, OperationKind.RENAME}:
+            reasons.append(self._reason(
+                ControlReasonCode.BULK_MOVE_OR_RENAME,
+                RequiredControl.BLOCK,
+                "Move or rename operations are blocked in the source repository",
+                f"operation={request.operation.value}",
+                f"paths={self._paths_evidence(request)}",
+            ))
+        if request.operation is OperationKind.WRITE and request.reversibility is Reversibility.DESTRUCTIVE:
+            reasons.append(self._reason(
+                ControlReasonCode.DESTRUCTIVE_OPERATION,
+                RequiredControl.BLOCK,
+                "Destructive source-repository writes are blocked",
+                f"reversibility={request.reversibility.value}",
+                f"paths={self._paths_evidence(request)}",
             ))
         command = request.command
         if command is None:
@@ -311,56 +332,38 @@ class ExecutionControlPolicy:
             ))
         return reasons
 
-    def _isolate_reasons(self, request: NormalizedToolRequest) -> list[ControlReason]:
+    def _high_impact_confirm_reasons(self, request: NormalizedToolRequest) -> list[ControlReason]:
+        """Explain high-impact but reviewable source changes before confirmation."""
+
         reasons: list[ControlReason] = []
-        file_change = request.operation in {
-            OperationKind.WRITE,
-            OperationKind.DELETE,
-            OperationKind.MOVE,
-            OperationKind.RENAME,
-        }
+        file_change = request.operation is OperationKind.WRITE
         if file_change and request.impact_scope is ImpactScope.MULTI_FILE:
             reasons.append(self._reason(
                 ControlReasonCode.MULTI_FILE_SCOPE,
-                RequiredControl.ISOLATE,
+                RequiredControl.CONFIRM,
                 "Operation affects multiple files",
                 f"paths={self._paths_evidence(request)}",
             ))
         if file_change and request.impact_scope is ImpactScope.DIRECTORY:
             reasons.append(self._reason(
                 ControlReasonCode.DIRECTORY_SCOPE,
-                RequiredControl.ISOLATE,
+                RequiredControl.CONFIRM,
                 "Operation affects a directory scope",
                 f"paths={self._paths_evidence(request)}",
             ))
         if file_change and request.impact_scope is ImpactScope.UNKNOWN:
             reasons.append(self._reason(
                 ControlReasonCode.UNKNOWN_SCOPE,
-                RequiredControl.ISOLATE,
+                RequiredControl.CONFIRM,
                 "Operation impact scope is unknown",
                 f"tool={request.tool_name}",
             ))
-        if file_change and request.reversibility in {Reversibility.DESTRUCTIVE, Reversibility.UNKNOWN}:
+        if file_change and request.reversibility is Reversibility.UNKNOWN:
             reasons.append(self._reason(
                 ControlReasonCode.DESTRUCTIVE_OPERATION,
-                RequiredControl.ISOLATE,
-                "Operation is destructive or its reversibility is unknown",
+                RequiredControl.CONFIRM,
+                "Operation reversibility is unknown",
                 f"reversibility={request.reversibility.value}",
-            ))
-        if request.operation is OperationKind.DELETE:
-            reasons.append(self._reason(
-                ControlReasonCode.DELETE_OPERATION,
-                RequiredControl.ISOLATE,
-                "Delete operations require an isolated execution boundary",
-                f"paths={self._paths_evidence(request)}",
-            ))
-        if request.operation in {OperationKind.MOVE, OperationKind.RENAME}:
-            reasons.append(self._reason(
-                ControlReasonCode.BULK_MOVE_OR_RENAME,
-                RequiredControl.ISOLATE,
-                "Move or rename operations require an isolated execution boundary",
-                f"operation={request.operation.value}",
-                f"paths={self._paths_evidence(request)}",
             ))
         if file_change:
             for category, code, label in (
@@ -373,7 +376,7 @@ class ExecutionControlPolicy:
                 if category in request.file_categories:
                     reasons.append(self._reason(
                         code,
-                        RequiredControl.ISOLATE,
+                        RequiredControl.CONFIRM,
                         f"Operation modifies a {label}",
                         f"file_category={category.value}",
                         f"paths={self._paths_evidence(request)}",
@@ -382,14 +385,14 @@ class ExecutionControlPolicy:
         if command and command.kind is CommandKind.FORMAT and command.has_fix:
             reasons.append(self._reason(
                 ControlReasonCode.FORMAT_FIX,
-                RequiredControl.ISOLATE,
+                RequiredControl.CONFIRM,
                 "Formatting command includes a fix mode",
                 f"command={command.display}",
             ))
         if command and command.kind is CommandKind.CODE_GENERATION:
             reasons.append(self._reason(
                 ControlReasonCode.CODE_GENERATION,
-                RequiredControl.ISOLATE,
+                RequiredControl.CONFIRM,
                 "Code generation can modify a broad file set",
                 f"command={command.display}",
             ))
@@ -426,7 +429,7 @@ class ExecutionControlPolicy:
             return [self._reason(
                 ControlReasonCode.APPROVED_ARTIFACT_READ,
                 RequiredControl.DIRECT,
-                "Read targets an artifact produced by this Chat isolation run",
+                "Read targets a registered review artifact",
                 f"paths={self._paths_evidence(request)}",
             )]
         if request.operation is OperationKind.READ:

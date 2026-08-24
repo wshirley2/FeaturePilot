@@ -145,7 +145,7 @@ def test_plan_chat_shortcuts_keep_safe_non_execution_defaults(tmp_path):
     assert not (tmp_path / "runs").exists()
 
 
-def test_unified_chat_switches_to_plan_executes_and_returns_to_chat(tmp_path, monkeypatch):
+def test_chat_does_not_embed_plan_mode_or_create_a_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     output = StringIO()
@@ -153,38 +153,15 @@ def test_unified_chat_switches_to_plan_executes_and_returns_to_chat(tmp_path, mo
     sink = TerminalEventSink(console)
     chat_provider = FakeProvider([
         LLMResponse(content="普通 Chat 正常。"),
-        LLMResponse(content="我知道刚才的 Managed Run。"),
-    ])
-    managed_provider = FakeProvider([
-        LLMResponse(tool_calls=[ToolCall(
-            "write-1",
-            "write_file",
-            {"file_path": "README.md", "content": "# Demo\n\nUnified Plan verification\n"},
-        )]),
-        LLMResponse(content="Unified managed run completed."),
+        LLMResponse(content="这个请求仍由普通 Chat 处理。"),
     ])
     runtime = RuntimeBootstrap(provider_factory=lambda config: chat_provider).build(RuntimeBootstrapInput(
         repository=repository,
         event_sink=sink,
     ))
-    store = PlanStore(tmp_path / "plans")
-    plan_session = PlanChatSession(
-        repository,
-        planning_service=PlanningService(store),
-        plan_store=store,
-        managed_service=ManagedRunService(
-            plan_store=store,
-            workspace_service=WorkspaceService(CopyWorkspaceBackend(tmp_path / "runs")),
-            runtime_bootstrap=RuntimeBootstrap(provider_factory=lambda config: managed_provider),
-            event_sink=sink,
-        ),
-        console=console,
-    )
     inputs = iter([
         "介绍一下仓库",
         "我想先制定计划：Append Unified Plan verification to README.md",
-        "批准并执行",
-        "刚才的运行结果是什么？",
         "/exit",
     ])
     prompts = []
@@ -193,32 +170,17 @@ def test_unified_chat_switches_to_plan_executes_and_returns_to_chat(tmp_path, mo
         prompts.append(prompt)
         return next(inputs)
 
-    session = ChatSession(
-        runtime,
-        console=console,
-        input_fn=input_fn,
-        plan_session=plan_session,
-    )
+    session = ChatSession(runtime, console=console, input_fn=input_fn)
 
     assert session.run() == 0
 
     rendered = output.getvalue()
     assert rendered.count("FeaturePilot Chat") == 1
     assert "FeaturePilot Plan Chat" not in rendered
-    assert "已进入 Plan 模式" in rendered
-    assert "Managed Run 执行与验证完成" in rendered
-    assert "已返回 Chat 模式" in rendered
-    assert prompts == ["You > ", "You > ", "Plan > ", "You > ", "You > "]
+    assert "Plan > " not in prompts
+    assert prompts == ["You > ", "You > ", "You > "]
     assert len(chat_provider.requests) == 2
-    follow_up_messages = chat_provider.requests[1]["messages"]
-    managed_fact = next(
-        message["content"]
-        for message in follow_up_messages
-        if message["role"] == "system" and "Managed Run completed during this chat" in message["content"]
-    )
-    assert "Workspace:" in managed_fact
-    assert "Validation: passed" in managed_fact
-    assert "Unified managed run completed." in managed_fact
+    assert not (tmp_path / "runs").exists()
 
 
 def test_workspace_creation_failure_stays_in_plan_mode_with_a_brief_retry_message(tmp_path):

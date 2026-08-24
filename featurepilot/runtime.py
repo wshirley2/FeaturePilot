@@ -22,8 +22,6 @@ from .repository import RepositoryProfiler
 from .repository.profiler import RepositoryProfile
 from .runtime_contracts import (
     RuntimeMode,
-    RuntimeResultScope,
-    RuntimeResultStatus,
     TaskRuntimeIdentity,
     TaskRuntimePaths,
     TaskRuntimeResult,
@@ -71,7 +69,7 @@ class TaskRuntime:
     session_store: SessionStore | None = None
     session_sink: SessionEventSink | None = None
     base_system_context: str = ""
-    pending_isolation_requests: list[dict[str, object]] = field(default_factory=list)
+    recovery_notices: list[str] = field(default_factory=list)
 
     @property
     def runtime_mode(self) -> RuntimeMode:
@@ -115,50 +113,14 @@ class TaskRuntime:
     ) -> str:
         """Run one controlled Agent turn through the shared Runtime boundary."""
 
-        response = self.agent.chat(user_input, cancellation_token=cancellation_token)
-        take_pending = getattr(self.agent.tool_executor, "take_pending_isolation_request", None)
-        pending = take_pending() if callable(take_pending) else None
-        if isinstance(pending, dict):
-            pending["user_request"] = user_input
-            self.pending_isolation_requests.append(pending)
-            if self.session_sink is not None:
-                self.session_sink.record("isolation_pending", self.agent.session_id, pending)
-            self.record_result(TaskRuntimeResult(
-                scope=RuntimeResultScope.TURN,
-                status=RuntimeResultStatus.ESCALATION_REQUIRED,
-                response=response,
-                reason=str(pending.get("message") or "Execution requires isolation"),
-            ))
-        return response
+        return self.agent.chat(user_input, cancellation_token=cancellation_token)
 
-    def record_isolation_event(
-        self,
-        event_type: str,
-        tool_call_id: str,
-        payload: dict[str, object] | None = None,
-    ) -> None:
-        """Persist a user decision about one pending Chat isolation request."""
+    def consume_recovery_notices(self) -> list[str]:
+        """Return compatibility notices that must be shown after Session recovery."""
 
-        if self.session_sink is not None:
-            self.session_sink.record(event_type, self.agent.session_id, {
-                "tool_call_id": tool_call_id,
-                **dict(payload or {}),
-            })
-
-    def resolve_pending_isolation(self, tool_call_id: str) -> None:
-        """Remove only an accepted or cancelled request from the live projection."""
-
-        self.pending_isolation_requests = [
-            item for item in self.pending_isolation_requests
-            if item.get("tool_call_id") != tool_call_id
-        ]
-
-    def register_review_artifacts(self, paths: list[str | Path]) -> None:
-        """Make completed isolation artifacts available for this Chat to read."""
-
-        register = getattr(self.agent.tool_executor, "register_review_artifacts", None)
-        if callable(register):
-            register(paths)
+        notices = list(self.recovery_notices)
+        self.recovery_notices.clear()
+        return notices
 
     def ensure_persisted(self) -> None:
         """Require the latest Runtime and Session facts to be durable."""
@@ -205,7 +167,15 @@ class TaskRuntime:
         set_task_id = getattr(self.agent.tool_executor, "set_task_id", None)
         if callable(set_task_id):
             set_task_id(projection.task_id)
-        self.register_review_artifacts(projection.review_artifact_paths)
+        legacy_isolations = list(projection.pending_isolation_requests)
+        if legacy_isolations:
+            notice = (
+                f"发现 {len(legacy_isolations)} 个旧版待隔离操作：它们此前未执行，"
+                "当前版本不会自动恢复、执行或改写为源仓库写入。"
+            )
+            self.recovery_notices.append(notice)
+            self.agent.messages.append({"role": "system", "content": notice})
+            projection.warnings.append("旧版待隔离操作已冻结；当前 Chat 不会自动执行。")
         if self.session_sink is not None:
             self.session_sink.last_result = projection.last_result
             self.session_sink.record("session_resumed", projection.session_id, {
@@ -213,7 +183,6 @@ class TaskRuntime:
                 "event_count": len(projection.events),
                 "warnings": projection.warnings,
             })
-        self.pending_isolation_requests = list(projection.pending_isolation_requests)
         return projection
 
 

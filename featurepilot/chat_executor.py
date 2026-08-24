@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import threading
-from collections.abc import Iterable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from uuid import uuid4
@@ -56,9 +55,6 @@ _TOOL_EFFECTS = {
     "fetch_url": PermissionEffect.NETWORK,
     "agent": PermissionEffect.DELEGATE,
 }
-_REVIEW_ARTIFACT_NAMES = frozenset({"changes.patch", "events.jsonl", "report.md", "validation.json"})
-
-
 class RepositoryToolExecutor:
     """Bind tools to a repository and enforce C3 permissions before effects."""
 
@@ -78,37 +74,18 @@ class RepositoryToolExecutor:
         self._side_effect_lock = threading.Lock()
         self._turn_stop_lock = threading.Lock()
         self._turn_stop_message: str | None = None
-        self._pending_isolation_request: dict[str, Any] | None = None
         self._execution_control_policy = ExecutionControlPolicy()
-        self._review_artifact_paths: set[Path] = set()
 
     def begin_turn(self) -> None:
         """Clear the optional stop request left by the previous Chat turn."""
 
         with self._turn_stop_lock:
             self._turn_stop_message = None
-            self._pending_isolation_request = None
-
-    def take_pending_isolation_request(self) -> dict[str, Any] | None:
-        """Return the current turn's unexecuted isolation request once."""
-
-        with self._turn_stop_lock:
-            request = self._pending_isolation_request
-            self._pending_isolation_request = None
-            return request
 
     def set_task_id(self, task_id: str | None) -> None:
         """Refresh the optional Chat task correlation after Session resume."""
 
         self.task_id = task_id
-
-    def register_review_artifacts(self, paths: Iterable[str | Path]) -> None:
-        """Allow read-only review of artifacts created by this Chat's isolated Runs."""
-
-        for value in paths:
-            candidate = Path(value).resolve()
-            if candidate.name in _REVIEW_ARTIFACT_NAMES:
-                self._review_artifact_paths.add(candidate)
 
     def consume_turn_stop_message(self) -> str | None:
         """Return and clear a user-denial request to end the current turn."""
@@ -138,8 +115,6 @@ class RepositoryToolExecutor:
         if path_argument:
             value = normalized.get(path_argument, ".")
             path_boundary, affected_paths, resolved_path = self._normalized_path_fact(value)
-            if tool.name == "read_file" and resolved_path in self._review_artifact_paths:
-                path_boundary = PathBoundary.APPROVED_ARTIFACT
             if resolved_path is not None:
                 normalized[path_argument] = str(resolved_path)
 
@@ -160,26 +135,6 @@ class RepositoryToolExecutor:
             message = _control_message("该操作已被阻断，未执行。", assessment)
             self._request_turn_stop(message)
             return f"Policy denied {tool.name}: {message}"
-        if assessment.required_control is RequiredControl.ISOLATE:
-            message = _control_message(
-                "该操作需要隔离执行；本轮没有执行，源仓库未修改。可由你选择在隔离 Workspace 中继续。",
-                assessment,
-            )
-            with self._turn_stop_lock:
-                self._pending_isolation_request = {
-                    "task_id": self.task_id,
-                    "tool_name": tool.name,
-                    "tool_call_id": tool_call_id,
-                    "session_id": execution_context.session_id if execution_context is not None else None,
-                    "turn_id": execution_context.turn_id if execution_context is not None else None,
-                    "message": message,
-                    "normalized_summary": _control_summary(control_request),
-                    "reasons": _serialized_reasons(assessment),
-                    "original_arguments": dict(arguments),
-                }
-            self._request_turn_stop(message)
-            return f"[isolation required] {message}"
-
         if tool.name == "glob":
             pattern_error = _validate_relative_pattern(normalized.get("pattern"), "glob pattern")
             if pattern_error:
@@ -196,12 +151,12 @@ class RepositoryToolExecutor:
 
         if tool.name in {"edit_file", "write_file"}:
             with self._side_effect_lock:
-                return self._execute_write(tool, normalized, tool_call_id)
+                return self._execute_write(tool, normalized, tool_call_id, assessment)
         if tool.name == "bash":
             if not isinstance(tool, BashTool):
                 return "Error: bash tool does not support a repository working directory"
             with self._side_effect_lock:
-                return self._execute_command(tool, normalized, tool_call_id)
+                return self._execute_command(tool, normalized, tool_call_id, assessment)
 
         request = PermissionRequest(
             tool_call_id=tool_call_id,
@@ -221,6 +176,7 @@ class RepositoryToolExecutor:
         tool: BashTool,
         normalized: dict[str, Any],
         tool_call_id: str,
+        assessment: ExecutionControlAssessment,
     ) -> str:
         command = normalized.get("command")
         if not isinstance(command, str):
@@ -231,7 +187,10 @@ class RepositoryToolExecutor:
             tool_name="bash",
             effect=command_effect(command),
             normalized_arguments=normalized,
-            reason="Shell command may have repository or environment side effects",
+            reason=_confirmation_reason(
+                "Shell command may have repository or environment side effects",
+                assessment,
+            ),
             scope=command,
             command_tokens=tokens,
             command_prefix=command_prefix(tokens),
@@ -251,6 +210,7 @@ class RepositoryToolExecutor:
         tool: Tool,
         normalized: dict[str, Any],
         tool_call_id: str,
+        assessment: ExecutionControlAssessment,
     ) -> str:
         force_prompt = False
         for _attempt in range(4):
@@ -267,9 +227,15 @@ class RepositoryToolExecutor:
                 effect=PermissionEffect.WRITE,
                 normalized_arguments=normalized,
                 reason=(
-                    "Source changed after an earlier approval; review the regenerated diff"
+                    _confirmation_reason(
+                        "Source changed after an earlier approval; review the regenerated diff",
+                        assessment,
+                    )
                     if force_prompt
-                    else "File content will change only after approval"
+                    else _confirmation_reason(
+                        "File content will change only after approval",
+                        assessment,
+                    )
                 ),
                 scope=proposal.display_path,
                 trusted_preview=proposal.trusted_diff,
@@ -574,6 +540,19 @@ def _control_message(prefix: str, assessment: ExecutionControlAssessment) -> str
         for reason in assessment.reasons
     )
     return f"{prefix}\n原因与证据：{details}"
+
+
+def _confirmation_reason(default: str, assessment: ExecutionControlAssessment) -> str:
+    """Attach deterministic control facts to the existing C3 confirmation prompt."""
+
+    reasons = [reason for reason in assessment.reasons if reason.required_control is RequiredControl.CONFIRM]
+    if not reasons:
+        return default
+    details = "\n".join(
+        f"- {reason.message}：{'；'.join(reason.evidence)}"
+        for reason in reasons
+    )
+    return f"{default}\n执行控制原因与证据：\n{details}"
 
 
 def _is_dangerous_system_path(path: Path) -> bool:

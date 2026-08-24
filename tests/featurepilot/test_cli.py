@@ -172,7 +172,7 @@ def test_plan_chat_command_builds_the_conversational_session(tmp_path, monkeypat
     assert captured["kwargs"]["limits"].max_provider_calls == 3
 
 
-def test_default_chat_entry_injects_the_embedded_plan_session(tmp_path, monkeypatch):
+def test_default_chat_entry_does_not_inject_an_embedded_plan_session(tmp_path, monkeypatch):
     monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -206,8 +206,7 @@ def test_default_chat_entry_injects_the_embedded_plan_session(tmp_path, monkeypa
 
     assert result == 9
     assert captured["runtime"].repository == repository.resolve()
-    assert captured["plan_session"] is not None
-    assert captured["plan_session"].limits.max_tool_rounds == 4
+    assert captured["plan_session"] is None
 
 
 def test_sessions_commands_list_and_show_event_sessions(tmp_path, capsys):

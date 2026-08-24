@@ -289,30 +289,7 @@ def _run_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         ))
     except ValueError as error:
         parser.error(str(error))
-    store = PlanStore(args.store_dir)
-    managed_service = ManagedRunService(
-        plan_store=store,
-        workspace_service=WorkspaceService(CopyWorkspaceBackend(args.runs_dir)),
-        runtime_bootstrap=bootstrap,
-        event_sink=sink,
-    )
-    plan_session = PlanChatSession(
-        runtime.repository,
-        planning_service=PlanningService(store),
-        plan_store=store,
-        managed_service=managed_service,
-        console=console,
-        model=args.model,
-        base_url=args.base_url,
-        api_key=args.api_key,
-        limits=_runtime_limits_for(args),
-    )
-    return ChatSession(
-        runtime,
-        console=console,
-        plan_session=plan_session,
-        isolation_service=managed_service,
-    ).run()
+    return ChatSession(runtime, console=console).run()
 
 
 def _runtime_limits_for(args: argparse.Namespace) -> RuntimeLimits:
