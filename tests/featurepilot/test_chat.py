@@ -165,7 +165,8 @@ def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(tm
     assert "This is a lightweight profile" in runtime.agent._system
     assert "Product: FeaturePilot" in runtime.agent._system
     assert f"Current model: {runtime.config.model}" in runtime.agent._system
-    assert "use cmd-compatible commands such as `dir`, not Unix commands such as `ls -la`" in runtime.agent._system
+    if sys.platform == "win32":
+        assert "use cmd-compatible commands such as `dir`, not Unix commands such as `ls -la`" in runtime.agent._system
     assert {tool.name for tool in runtime.tools} == {
         "read_file",
         "glob",
