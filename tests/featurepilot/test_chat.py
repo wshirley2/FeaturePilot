@@ -16,7 +16,7 @@ from corecoder.events import NullEventSink, RuntimeEvent, RuntimeEventType
 from corecoder.llm import LLMResponse, ToolCall
 from corecoder.permissions import PermissionDecision
 from featurepilot.chat import ChatSession, SlashCommandCompleter, TerminalEventSink
-from featurepilot.chat_executor import RepositoryToolExecutor
+from featurepilot.chat_executor import RepositoryToolExecutor, _normalized_command
 from featurepilot.cli import _normalize_command
 from featurepilot.managed import ManagedRunService
 from featurepilot.path_policy import ignored_child_names
@@ -290,6 +290,11 @@ def test_chat_directory_listing_command_executes_directly_without_prompting(tmp_
     rendered = output.getvalue()
     assert "← bash: completed" in rendered
     assert prompt.requests == []
+
+
+def test_directory_listing_commands_are_normalized_as_read_only_shell_commands():
+    assert _normalized_command("dir").kind.value == "read_only_shell"
+    assert _normalized_command("ls -la").kind.value == "read_only_shell"
 
 
 def test_chat_end_to_end_reads_edits_validates_and_continues_without_network(tmp_path, monkeypatch):

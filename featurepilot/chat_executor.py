@@ -414,7 +414,7 @@ def _normalized_command(value: object) -> NormalizedCommand:
 
 def _command_kind(tokens: tuple[str, ...], has_fix: bool) -> CommandKind:
     names = tuple(Path(token).name.lower() for token in tokens)
-    if names[:1] in {"dir", "ls"}:
+    if names[:1] in {("dir",), ("ls",)}:
         return CommandKind.READ_ONLY_SHELL
     git_subcommand = _git_subcommand(names)
     if git_subcommand == "push":
