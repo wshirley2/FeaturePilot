@@ -39,6 +39,7 @@ class PathBoundary(str, Enum):
     """Where the normalized operation targets relative to its repository."""
 
     REPOSITORY = "repository"
+    APPROVED_ARTIFACT = "approved_artifact"
     OUTSIDE_REPOSITORY = "outside_repository"
     DANGEROUS_SYSTEM = "dangerous_system"
     UNRESOLVED = "unresolved"
@@ -101,6 +102,7 @@ class ControlReasonCode(str, Enum):
     """Stable machine-readable explanations for execution-control decisions."""
 
     REPOSITORY_READ = "repository_read"
+    APPROVED_ARTIFACT_READ = "approved_artifact_read"
     REPOSITORY_SEARCH = "repository_search"
     SAFE_TEST_OR_LINT = "safe_test_or_lint"
     READ_ONLY_GIT = "read_only_git"
@@ -410,6 +412,13 @@ class ExecutionControlPolicy:
         return reasons
 
     def _direct_reasons(self, request: NormalizedToolRequest) -> list[ControlReason]:
+        if request.operation is OperationKind.READ and request.path_boundary is PathBoundary.APPROVED_ARTIFACT:
+            return [self._reason(
+                ControlReasonCode.APPROVED_ARTIFACT_READ,
+                RequiredControl.DIRECT,
+                "Read targets an artifact produced by this Chat isolation run",
+                f"paths={self._paths_evidence(request)}",
+            )]
         if request.operation is OperationKind.READ:
             return [self._reason(
                 ControlReasonCode.REPOSITORY_READ,

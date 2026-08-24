@@ -711,6 +711,12 @@ class ChatSession:
             "validation": str(result.validation_path) if result.validation_path else None,
             "report": str(result.report_path),
         })
+        self.runtime.register_review_artifacts([
+            str(result.patch_path),
+            str(result.validation_path) if result.validation_path else "",
+            str(result.report_path),
+            str(result.events_path),
+        ])
         self.runtime.resolve_pending_isolation(tool_call_id)
         self._remember_isolated_run(result)
         validation = result.validation.status if result.validation is not None else "not_started"

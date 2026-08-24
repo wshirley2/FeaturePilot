@@ -153,6 +153,13 @@ class TaskRuntime:
             if item.get("tool_call_id") != tool_call_id
         ]
 
+    def register_review_artifacts(self, paths: list[str | Path]) -> None:
+        """Make completed isolation artifacts available for this Chat to read."""
+
+        register = getattr(self.agent.tool_executor, "register_review_artifacts", None)
+        if callable(register):
+            register(paths)
+
     def ensure_persisted(self) -> None:
         """Require the latest Runtime and Session facts to be durable."""
 
@@ -198,6 +205,7 @@ class TaskRuntime:
         set_task_id = getattr(self.agent.tool_executor, "set_task_id", None)
         if callable(set_task_id):
             set_task_id(projection.task_id)
+        self.register_review_artifacts(projection.review_artifact_paths)
         if self.session_sink is not None:
             self.session_sink.last_result = projection.last_result
             self.session_sink.record("session_resumed", projection.session_id, {

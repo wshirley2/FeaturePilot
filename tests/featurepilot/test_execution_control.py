@@ -34,6 +34,11 @@ def _request(**overrides) -> NormalizedToolRequest:
     [
         (_request(), RequiredControl.DIRECT, ControlReasonCode.REPOSITORY_READ),
         (
+            _request(path_boundary=PathBoundary.APPROVED_ARTIFACT),
+            RequiredControl.DIRECT,
+            ControlReasonCode.APPROVED_ARTIFACT_READ,
+        ),
+        (
             _request(
                 affected_paths=("pyproject.toml",),
                 file_categories=frozenset({FileCategory.DEPENDENCY_MANIFEST}),

@@ -106,6 +106,7 @@ class SessionProjection:
     completion_tokens: int = 0
     last_result: TaskRuntimeResult | None = None
     pending_isolation_requests: list[dict[str, Any]] = field(default_factory=list)
+    review_artifact_paths: list[str] = field(default_factory=list)
 
     @property
     def total_tokens(self) -> int:
@@ -262,6 +263,11 @@ class SessionStore:
                     for request in projection.pending_isolation_requests
                     if request.get("tool_call_id") != tool_call_id
                 ]
+                if event.event_type == "isolation_upgrade_completed":
+                    for key in ("patch", "validation", "report", "events"):
+                        value = payload.get(key)
+                        if isinstance(value, str) and value not in projection.review_artifact_paths:
+                            projection.review_artifact_paths.append(value)
             elif event.event_type == RuntimeEventType.TOOL_COMPLETED.value:
                 key = (event.turn_id, event.round_index)
                 calls = pending_calls.get(key, [])

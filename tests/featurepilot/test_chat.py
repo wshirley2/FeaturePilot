@@ -532,10 +532,30 @@ def test_chat_can_upgrade_an_isolated_write_without_touching_source_or_replaying
     assert "隔离执行已结束" in rendered
     assert "源仓库未修改" in rendered
 
+    patch_path = run_directory / "changes.patch"
+    provider.responses = iter([
+        LLMResponse(tool_calls=[ToolCall(
+            "review-patch",
+            "read_file",
+            {"file_path": str(patch_path)},
+        )]),
+        LLMResponse(content="已审查隔离 Patch。"),
+    ])
+    assert runtime.run_turn("读取这次隔离执行的 Patch") == "已审查隔离 Patch。"
+    assert "+isolated" in runtime.agent.messages[-2]["content"]
+
     saved = runtime.session_store.replay(runtime.agent.session_id)
     assert saved.pending_isolation_requests == []
+    assert str(patch_path) in saved.review_artifact_paths
     assert any(event.event_type == "isolation_upgrade_completed" for event in saved.events)
-    resumed_provider = FakeProvider([])
+    resumed_provider = FakeProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "review-after-resume",
+            "read_file",
+            {"file_path": str(patch_path)},
+        )]),
+        LLMResponse(content="恢复后仍可审查 Patch。"),
+    ])
     resumed = RuntimeBootstrap(provider_factory=lambda _config: resumed_provider).build(RuntimeBootstrapInput(
         repository=tmp_path,
         event_sink=TerminalEventSink(Console(file=StringIO(), force_terminal=False, color_system=None)),
@@ -543,7 +563,27 @@ def test_chat_can_upgrade_an_isolated_write_without_touching_source_or_replaying
         resume_session_id=runtime.agent.session_id,
     ))
     assert resumed.pending_isolation_requests == []
-    assert resumed_provider.requests == []
+    assert resumed.run_turn("恢复后读取 Patch") == "恢复后仍可审查 Patch。"
+    assert len(resumed_provider.requests) == 2
+
+
+def test_chat_blocks_unregistered_outside_artifact_reads(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    outside = tmp_path.parent / "unregistered-artifact.txt"
+    outside.write_text("do not expose\n", encoding="utf-8")
+    provider = FakeProvider([LLMResponse(tool_calls=[ToolCall(
+        "outside-read",
+        "read_file",
+        {"file_path": str(outside)},
+    )])])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    runtime = make_runtime(tmp_path, provider, console)
+
+    response = runtime.run_turn("读取仓库外文件")
+
+    assert "该操作已被阻断，未执行" in response
+    assert "do not expose" not in "\n".join(str(message) for message in runtime.agent.messages)
 
 
 def test_chat_can_keep_or_cancel_an_isolated_request_without_creating_a_workspace(tmp_path, monkeypatch):

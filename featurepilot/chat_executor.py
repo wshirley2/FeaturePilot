@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import threading
+from collections.abc import Iterable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from uuid import uuid4
@@ -55,6 +56,7 @@ _TOOL_EFFECTS = {
     "fetch_url": PermissionEffect.NETWORK,
     "agent": PermissionEffect.DELEGATE,
 }
+_REVIEW_ARTIFACT_NAMES = frozenset({"changes.patch", "events.jsonl", "report.md", "validation.json"})
 
 
 class RepositoryToolExecutor:
@@ -78,6 +80,7 @@ class RepositoryToolExecutor:
         self._turn_stop_message: str | None = None
         self._pending_isolation_request: dict[str, Any] | None = None
         self._execution_control_policy = ExecutionControlPolicy()
+        self._review_artifact_paths: set[Path] = set()
 
     def begin_turn(self) -> None:
         """Clear the optional stop request left by the previous Chat turn."""
@@ -98,6 +101,14 @@ class RepositoryToolExecutor:
         """Refresh the optional Chat task correlation after Session resume."""
 
         self.task_id = task_id
+
+    def register_review_artifacts(self, paths: Iterable[str | Path]) -> None:
+        """Allow read-only review of artifacts created by this Chat's isolated Runs."""
+
+        for value in paths:
+            candidate = Path(value).resolve()
+            if candidate.name in _REVIEW_ARTIFACT_NAMES:
+                self._review_artifact_paths.add(candidate)
 
     def consume_turn_stop_message(self) -> str | None:
         """Return and clear a user-denial request to end the current turn."""
@@ -127,6 +138,8 @@ class RepositoryToolExecutor:
         if path_argument:
             value = normalized.get(path_argument, ".")
             path_boundary, affected_paths, resolved_path = self._normalized_path_fact(value)
+            if tool.name == "read_file" and resolved_path in self._review_artifact_paths:
+                path_boundary = PathBoundary.APPROVED_ARTIFACT
             if resolved_path is not None:
                 normalized[path_argument] = str(resolved_path)
 
@@ -175,7 +188,10 @@ class RepositoryToolExecutor:
             pattern_error = _validate_relative_pattern(normalized.get("include"), "grep include")
             if pattern_error:
                 return f"Policy denied grep: {pattern_error}"
-        if path_argument and path_boundary is not PathBoundary.REPOSITORY:
+        if path_argument and path_boundary not in {
+            PathBoundary.REPOSITORY,
+            PathBoundary.APPROVED_ARTIFACT,
+        }:
             return f"Policy denied {tool.name}: path could not be normalized within the repository"
 
         if tool.name in {"edit_file", "write_file"}:
