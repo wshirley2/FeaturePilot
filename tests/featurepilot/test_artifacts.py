@@ -94,6 +94,36 @@ def test_change_service_classifies_text_binary_and_out_of_plan_files(tmp_path):
     assert "TOKEN=secret" not in patch
 
 
+def test_change_service_ignores_line_ending_only_rewrites_in_patch(tmp_path):
+    source = tmp_path / "source"
+    workspace_path = tmp_path / "run" / "workspace"
+    source.mkdir()
+    workspace_path.mkdir(parents=True)
+    source_file = source / "pyproject.toml"
+    workspace_file = workspace_path / "pyproject.toml"
+    source_file.write_bytes(
+        b"[project]\ndescription = 'before'\nrequires-python = '>=3.10'\n"
+    )
+    workspace_file.write_bytes(
+        b"[project]\r\ndescription = 'after'\r\nrequires-python = '>=3.10'\r\n"
+    )
+
+    changes, patch_path = ChangeService().generate(
+        ChangeService().capture(source),
+        _workspace(source, workspace_path),
+        _record(source),
+    )
+
+    assert len(changes.files) == 1
+    assert changes.additions == 1
+    assert changes.deletions == 1
+    patch = patch_path.read_text(encoding="utf-8")
+    assert "-description = 'before'" in patch
+    assert "+description = 'after'" in patch
+    assert "-requires-python = '>=3.10'" not in patch
+    assert "+requires-python = '>=3.10'" not in patch
+
+
 def test_report_service_summarizes_failures_validation_changes_and_usage(tmp_path):
     source = tmp_path / "source"
     workspace_path = tmp_path / "run" / "workspace"

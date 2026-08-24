@@ -165,8 +165,8 @@ def _unified_patch(path: str, old: bytes | None, new: bytes | None) -> tuple[str
     fromfile = "/dev/null" if old is None else f"a/{path}"
     tofile = "/dev/null" if new is None else f"b/{path}"
     lines = list(difflib.unified_diff(
-        old_text.splitlines(keepends=True),
-        new_text.splitlines(keepends=True),
+        _patch_lines(old_text),
+        _patch_lines(new_text),
         fromfile=fromfile,
         tofile=tofile,
         lineterm="\n",
@@ -174,6 +174,12 @@ def _unified_patch(path: str, old: bytes | None, new: bytes | None) -> tuple[str
     additions = sum(line.startswith("+") and not line.startswith("+++") for line in lines)
     deletions = sum(line.startswith("-") and not line.startswith("---") for line in lines)
     return _render_patch_lines(lines), additions, deletions
+
+
+def _patch_lines(text: str) -> list[str]:
+    """Normalize text line endings so a CRLF-only rewrite is not a content diff."""
+
+    return text.replace("\r\n", "\n").replace("\r", "\n").splitlines(keepends=True)
 
 
 def _render_patch_lines(lines: list[str]) -> str:
