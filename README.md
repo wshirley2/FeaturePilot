@@ -49,6 +49,15 @@ featurepilot D:\path\to\your-project
 python -m featurepilot.cli benchmarks\cli_data_tool
 ```
 
+可选使用全屏终端界面（需要交互式 TTY；无 TTY 时会自动回退到普通 Chat）：
+
+```powershell
+featurepilot chat benchmarks\cli_data_tool --tui
+```
+
+TUI 启动时会先显示简短欢迎页，按 Enter 进入单栏时间线。用户消息用 `❯`、模型消息用 `●` 区分；回答会轻量渲染标题、列表、引用和代码块。连续的普通工具调用默认折叠成一条摘要；点击摘要可查看调用列表，再点击每条调用的 `▸/▾` 可展开它的输出，`Ctrl+O` 可展开/收起最近工具的详情。失败、取消、权限和 BLOCK 会单独显示。输入 `/details` 可列出调用，输入 `/details <call-id>` 会从已保存的 Session 事实展开详情，不会重新执行工具。Enter 发送消息，Shift+Enter 插入换行；滚轮、PageUp/PageDown 可浏览历史，Ctrl+End 回到最新消息。等待权限时输入 `1`（允许一次）、`2`（本会话允许）、`3`（拒绝）后按 Enter，也兼容 `allow`、`session`、`prefix`（如适用）和 `deny`。它不包含文件编辑器或多标签页。
+首次以 TUI 打开某个工作区时，会先显示一次 Claude 风格的安全确认；确认记录保存在当前用户的本地 FeaturePilot 配置中，因此同一工作区从不同 PowerShell 启动不会重复询问，换工作区才会重新确认。确认后才创建 Runtime、Provider 和 Session；拒绝会直接退出，普通 CLI 不受这道 TUI 预检影响。TUI 启动时显示常驻欢迎信息框，输入区可直接输入；随着交流增加，它会自然滚入历史上方。用户消息用 `❯`、模型消息用 `●` 区分；回答会轻量渲染标题、列表、引用和代码块。连续的普通工具调用默认折叠成一条摘要；点击摘要可查看调用列表，再点击每条调用的 `▸/▾` 可展开它的输出，`Ctrl+O` 可展开/收起最近工具的详情。失败、取消、权限和 BLOCK 会单独显示。输入 `/details` 可列出调用，输入 `/details <call-id>` 会从已保存的 Session 事实展开详情，不会重新执行工具。Enter 发送消息，Shift+Enter 插入换行；滚轮、PageUp/PageDown 可浏览历史，Ctrl+End 回到最新消息。输入 `/exit` 退出 TUI 时，已显示的对话会留在终端滚动回溯中，Session 也仍可恢复。等待权限时输入 `1`（允许一次）、`2`（本会话允许）、`3`（拒绝）后按 Enter，也兼容 `allow`、`session`、`prefix`（如适用）和 `deny`。它不包含文件编辑器或多标签页。
+
 ## 先试一次只读分析
 
 进入 Chat 后输入：
@@ -132,7 +141,7 @@ featurepilot benchmarks\cli_data_tool --max-tool-rounds 1
 
 ## 权限与安全边界
 
-FeaturePilot 对操作做三类判断：允许、询问、拒绝。
+普通 Chat 的执行控制路由使用 DIRECT / CONFIRM / BLOCK 三类结果；具体文件写入仍由 Permission、Trusted Diff 等更细粒度策略负责允许、询问或拒绝。
 
 - 仓库内读取、搜索、只读 Git、测试和 Lint 可按规则直接允许；
 - 文件写入（包括依赖清单、lock 文件、迁移、CI/部署配置）、安装依赖、网络访问和可解析的一般命令需要确认；
@@ -149,6 +158,7 @@ FeaturePilot 对操作做三类判断：允许、询问、拒绝。
 - 不同模型对标准 Tool Calling 的支持程度不同；
 - 超长 Session 仍会在恢复时构建完整事件和消息，按需加载尚未实现；
 - 当前产品重心是本地 CLI，不包含 Web、多用户协作或 MCP 平台能力。
+- Plan、Workspace、Managed Run 仍保留为显式高级 CLI 路径，但不是普通 Chat 的自动升级路径；隔离 Patch 目前也不能自动回写源仓库。
 
 ## 来源与许可
 

@@ -22,6 +22,8 @@ from .planning import PlanningService, PlanStore, PlanValidationError
 from .repository import RepositoryProfiler
 from .runtime import RuntimeBootstrap, RuntimeBootstrapInput
 from .sessions import SessionStore
+from .trust import confirm_workspace_access
+from .tui import FeaturePilotTui, tui_supported
 from .workspace import CopyWorkspaceBackend, WorkspaceService
 
 _PLAN_COMMANDS = {"chat", "create", "list", "show", "approve", "reject", "regenerate"}
@@ -45,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--api-key", help="Override the configured API key.")
     chat_parser.add_argument("--resume", help="Resume an event Session for this repository.")
     chat_parser.add_argument("--sessions-dir", type=Path, help="Directory containing event Session JSONL files.")
+    chat_parser.add_argument("--tui", action="store_true", help="Use the optional full-screen terminal interface.")
     _add_runtime_limits(chat_parser)
     chat_parser.add_argument("--runs-dir", type=Path, default=Path("runs"), help=argparse.SUPPRESS)
     _add_store_directory(chat_parser)
@@ -272,8 +275,16 @@ def _normalize_command(argv: list[str] | None) -> list[str]:
 
 
 def _run_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    tui = FeaturePilotTui() if args.tui and tui_supported() else None
+    if args.tui and tui is None:
+        print("--tui requires an interactive TTY; falling back to the standard Chat CLI.", file=sys.stderr)
     console = Console()
-    sink = TerminalEventSink(console)
+    # Keep the Claude-like workspace gate before RuntimeBootstrap.  The
+    # isatty check keeps test/non-interactive invocations from blocking and
+    # leaves the ordinary CLI's existing behavior unchanged.
+    if tui is not None and sys.stdin.isatty() and not confirm_workspace_access(args.repository, console=console):
+        return 0
+    sink = tui.event_sink if tui is not None else TerminalEventSink(console)
     bootstrap = RuntimeBootstrap()
     try:
         runtime = bootstrap.build(RuntimeBootstrapInput(
@@ -282,13 +293,16 @@ def _run_chat(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             model=args.model,
             base_url=args.base_url,
             api_key=args.api_key,
-            permission_prompt=TerminalPermissionPrompt(console),
+            permission_prompt=tui.permission_prompt if tui is not None else TerminalPermissionPrompt(console),
             session_directory=args.sessions_dir,
             resume_session_id=args.resume,
             limits=_runtime_limits_for(args),
         ))
     except ValueError as error:
         parser.error(str(error))
+    if tui is not None:
+        tui.bind_runtime(runtime)
+        return tui.run()
     return ChatSession(runtime, console=console).run()
 
 

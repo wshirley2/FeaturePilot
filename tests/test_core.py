@@ -15,6 +15,7 @@ def test_system_prompt_prefers_native_read_tools_and_simple_shell_calls():
     assert "prefer `glob`, `grep`, and `read_file` over `bash`" in prompt
     assert "Make each call one command" in prompt
     assert "For multiple read-only steps, issue separate tool calls" in prompt
+    assert "Do not claim to be OpenAI, ChatGPT" in prompt
 
 
 def test_version():

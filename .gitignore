@@ -16,13 +16,7 @@ venv/
 .DS_Store
 .pytest_cache/
 .tmp/
-/docs/架构说明.md
-/docs/开发路线.md
-/docs/产品优化清单.md
-/docs/设计决策/执行控制路由.md
-/docs/历史归档/
-/docs/开发日志/2026-08-10至2026-08-23.md
-/docs/开发日志/2026-08-24.md
+/docs/
 /本地文档/
 runs/
 tmp/

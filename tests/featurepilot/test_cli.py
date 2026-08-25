@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from featurepilot.cli import main
 from featurepilot.planning import PlanningService
@@ -207,6 +208,87 @@ def test_default_chat_entry_does_not_inject_an_embedded_plan_session(tmp_path, m
     assert result == 9
     assert captured["runtime"].repository == repository.resolve()
     assert captured["plan_session"] is None
+
+
+def test_chat_tui_option_uses_the_same_runtime_bootstrap(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    captured = {}
+
+    class Provider:
+        model = "fake-unified"
+
+    class FakeTui:
+        event_sink = SimpleNamespace(emit=lambda _event: None)
+        permission_prompt = object()
+
+        def bind_runtime(self, runtime):
+            captured["runtime"] = runtime
+
+        def run(self):
+            return 7
+
+    bootstrap = RuntimeBootstrap(provider_factory=lambda config: Provider())
+    monkeypatch.setattr("featurepilot.cli.RuntimeBootstrap", lambda: bootstrap)
+    monkeypatch.setattr("featurepilot.cli.FeaturePilotTui", FakeTui)
+    monkeypatch.setattr("featurepilot.cli.tui_supported", lambda: True)
+
+    assert main(["chat", str(repository), "--tui"]) == 7
+    assert captured["runtime"].repository == repository.resolve()
+
+
+def test_chat_tui_option_falls_back_to_the_standard_cli_without_a_tty(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    repository = tmp_path / "repository"
+    repository.mkdir()
+
+    class Provider:
+        model = "fake-unified"
+
+    class FakeChatSession:
+        def __init__(self, runtime, **_kwargs):
+            assert runtime.repository == repository.resolve()
+
+        def run(self):
+            return 6
+
+    bootstrap = RuntimeBootstrap(provider_factory=lambda config: Provider())
+    monkeypatch.setattr("featurepilot.cli.RuntimeBootstrap", lambda: bootstrap)
+    monkeypatch.setattr("featurepilot.cli.ChatSession", FakeChatSession)
+    monkeypatch.setattr("featurepilot.cli.tui_supported", lambda: False)
+
+    assert main(["chat", str(repository), "--tui"]) == 6
+    assert "requires an interactive TTY" in capsys.readouterr().err
+
+
+def test_tui_workspace_trust_gate_runs_before_runtime_bootstrap(tmp_path, monkeypatch):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    captured = {}
+
+    class FakeTui:
+        event_sink = SimpleNamespace(emit=lambda _event: None)
+        permission_prompt = object()
+
+        def bind_runtime(self, runtime):
+            captured["runtime"] = runtime
+
+        def run(self):
+            return 3
+
+    class FailingBootstrap:
+        def build(self, _inputs):
+            raise AssertionError("trust denial must happen before RuntimeBootstrap.build")
+
+    monkeypatch.setattr("featurepilot.cli.FeaturePilotTui", FakeTui)
+    monkeypatch.setattr("featurepilot.cli.tui_supported", lambda: True)
+    monkeypatch.setattr("featurepilot.cli.sys.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("featurepilot.cli.confirm_workspace_access", lambda path, console: False)
+    monkeypatch.setattr("featurepilot.cli.RuntimeBootstrap", FailingBootstrap)
+
+    assert main(["chat", str(repository), "--tui"]) == 0
+    assert "runtime" not in captured
 
 
 def test_sessions_commands_list_and_show_event_sessions(tmp_path, capsys):
