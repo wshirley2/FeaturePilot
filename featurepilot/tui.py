@@ -194,13 +194,14 @@ class FeaturePilotTui:
         )
         self.input = TextArea(
             multiline=True,
-            # Let prompt-toolkit derive the preferred height from the actual
-            # buffer content so Shift+Enter never hides the previous line.
-            height=Dimension(min=1),
+            # The text-change hook below keeps this Dimension in sync with
+            # the current buffer, including shrinking after deletion.
+            height=Dimension(min=1, preferred=1, max=1),
             prompt=self._input_prompt,
             style="class:input",
             accept_handler=self._submit,
         )
+        self.input.buffer.on_text_changed += self._on_input_text_changed
         self._status_area = TextArea(read_only=True, height=1, style="class:status", focusable=False)
         self._activity_area = TextArea(read_only=True, height=1, style="class:activity", focusable=False)
         self._activity_container = ConditionalContainer(
@@ -486,6 +487,27 @@ class FeaturePilotTui:
     def _insert_input_newline(self, buffer=None) -> None:
         (buffer or self.input.buffer).insert_text("\n")
 
+    def _on_input_text_changed(self, buffer) -> None:
+        """Resize the input window immediately as lines are added or removed."""
+        text = buffer.text
+        logical_lines = max(1, text.count("\n") + 1)
+        width = 0
+        info = self.input.window.render_info
+        if info is not None:
+            width = info.window_width
+        output = getattr(self.application, "output", None)
+        if not width and output is not None:
+            width = output.get_size().columns
+        if width:
+            prompt_width = len(self._input_prompt())
+            visual_lines = 0
+            for index, line in enumerate(text.split("\n")):
+                line_width = len(line) + (prompt_width if index == 0 else 0)
+                visual_lines += max(1, (line_width + width - 1) // width)
+            logical_lines = max(logical_lines, visual_lines)
+        self.input.window.height = Dimension(min=1, preferred=logical_lines, max=logical_lines)
+        self._invalidate()
+
     def _input_prompt(self) -> str:
         if self._pending_permission is not None:
             return "Permission [1/2/3] > "
@@ -503,8 +525,9 @@ class FeaturePilotTui:
             self._invalidate()
 
     def _invalidate(self) -> None:
-        if self.application is not None:
-            self.application.invalidate()
+        invalidate = getattr(self.application, "invalidate", None)
+        if invalidate is not None:
+            invalidate()
 
     def _drain_updates(self, _sender=None) -> None:
         while True:
@@ -831,6 +854,11 @@ class FeaturePilotTui:
         for line in _markdown_lines(entry.body):
             fragments.append((style, "\n  "))
             fragments.extend(_markdown_fragments(line, fallback_style=style))
+            if entry.kind == "user":
+                info = self.conversation.render_info
+                width = getattr(info, "window_width", 0) if info is not None else 0
+                if width:
+                    fragments.append((style, " " * max(0, width - len(line.plain) - 2)))
         return fragments
 
     def _tool_plain_lines(self, activity: _ToolActivity, *, prefix: str) -> list[str]:

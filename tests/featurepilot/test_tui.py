@@ -328,12 +328,14 @@ def test_tui_user_marker_is_not_highlighted_but_question_body_is(tmp_path):
     store.create("tui-session", repository_root=tmp_path, model="fake-model")
     tui = FeaturePilotTui()
     tui.bind_runtime(_runtime(tmp_path, store, "tui-session"))
+    tui.conversation.render_info = SimpleNamespace(window_width=40)
     entry = tui._append_transcript("you", "Please inspect README", kind="user")
 
     fragments = tui._entry_fragments(entry)
     assert fragments[0] == ("class:transcript", "❯ you")
     assert ("class:user", "\n  ") in fragments
     assert ("class:user", "Please inspect README") in fragments
+    assert ("class:user", " " * (40 - len("Please inspect README") - 2)) in fragments
 
 
 def test_tui_keeps_failed_and_blocked_tool_calls_out_of_folded_groups(tmp_path):
@@ -405,13 +407,18 @@ def test_tui_shift_enter_inserts_a_newline_and_input_has_bottom_divider(tmp_path
     children = application.layout.container.children
     assert children[-1].char == "─"
     assert not tui.input.window.dont_extend_width()
-    assert tui.input.window.height.max > 2
+    assert tui.input.window.height.max == 2
     assert not children[-1].dont_extend_width()
 
     tui.input.buffer.text = "line one\nline two\nline three"
     application.run(pre_run=application.exit)
     assert tui.input.window.render_info is not None
     assert tui.input.window.render_info.window_height >= 3
+
+    tui.input.buffer.text = "line one"
+    application.run(pre_run=application.exit)
+    assert tui.input.window.render_info is not None
+    assert tui.input.window.render_info.window_height == 1
 
 
 def test_tui_preserves_windows_shift_enter_as_a_newline_shortcut():
