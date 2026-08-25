@@ -49,18 +49,18 @@ featurepilot D:\path\to\your-project
 python -m featurepilot.cli benchmarks\cli_data_tool
 ```
 
-可选使用全屏终端界面（需要交互式 TTY；无 TTY 时会自动回退到普通 Chat）：
+可选使用 TUI（需要交互式 TTY；无 TTY 时会自动回退到普通 Chat）：
 
 ```powershell
 featurepilot chat benchmarks\cli_data_tool --tui
 ```
 
-TUI 启动后会显示欢迎框，输入区可以直接输入。首次打开新的工作区会先确认是否信任该目录。
+TUI 启动后会显示欢迎框，输入区可以直接输入；欢迎框会保留在对话历史顶部，随着新消息自然滚动。首次打开新的工作区会先确认是否信任该目录。
 
 - 用户消息以 `❯` 开头，模型消息以 `●` 开头；
 - 工具调用默认折叠，点击 `▸/▾` 或使用 `Ctrl+O` 查看详情；
 - `/details <call-id>` 查看某次工具调用的完整信息；
-- Enter 发送，Shift+Enter 换行；等待权限时输入 `1`、`2` 或 `3` 后按 Enter；
+- Enter 发送，Shift+Enter 换行，输入框会随多行内容自动伸缩；等待权限时输入 `1`、`2` 或 `3` 后按 Enter；
 - `/exit` 退出 TUI，已显示的对话会保留在终端回溯中。
 
 ## 先试一次只读分析

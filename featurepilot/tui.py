@@ -1027,7 +1027,7 @@ class FeaturePilotTui:
             self._invalidate()
 
 def tui_supported() -> bool:
-    """Return whether this process has an interactive terminal for full-screen UI."""
+    """Return whether this process has an interactive terminal for the TUI."""
 
     import sys
 

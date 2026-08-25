@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--api-key", help="Override the configured API key.")
     chat_parser.add_argument("--resume", help="Resume an event Session for this repository.")
     chat_parser.add_argument("--sessions-dir", type=Path, help="Directory containing event Session JSONL files.")
-    chat_parser.add_argument("--tui", action="store_true", help="Use the optional full-screen terminal interface.")
+    chat_parser.add_argument("--tui", action="store_true", help="Use the optional interactive terminal interface.")
     _add_runtime_limits(chat_parser)
     chat_parser.add_argument("--runs-dir", type=Path, default=Path("runs"), help=argparse.SUPPRESS)
     _add_store_directory(chat_parser)
