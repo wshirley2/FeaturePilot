@@ -55,8 +55,13 @@ python -m featurepilot.cli benchmarks\cli_data_tool
 featurepilot chat benchmarks\cli_data_tool --tui
 ```
 
-TUI 启动时会先显示简短欢迎页，按 Enter 进入单栏时间线。用户消息用 `❯`、模型消息用 `●` 区分；回答会轻量渲染标题、列表、引用和代码块。连续的普通工具调用默认折叠成一条摘要；点击摘要可查看调用列表，再点击每条调用的 `▸/▾` 可展开它的输出，`Ctrl+O` 可展开/收起最近工具的详情。失败、取消、权限和 BLOCK 会单独显示。输入 `/details` 可列出调用，输入 `/details <call-id>` 会从已保存的 Session 事实展开详情，不会重新执行工具。Enter 发送消息，Shift+Enter 插入换行；滚轮、PageUp/PageDown 可浏览历史，Ctrl+End 回到最新消息。等待权限时输入 `1`（允许一次）、`2`（本会话允许）、`3`（拒绝）后按 Enter，也兼容 `allow`、`session`、`prefix`（如适用）和 `deny`。它不包含文件编辑器或多标签页。
-首次以 TUI 打开某个工作区时，会先显示一次 Claude 风格的安全确认；确认记录保存在当前用户的本地 FeaturePilot 配置中，因此同一工作区从不同 PowerShell 启动不会重复询问，换工作区才会重新确认。确认后才创建 Runtime、Provider 和 Session；拒绝会直接退出，普通 CLI 不受这道 TUI 预检影响。TUI 启动时显示常驻欢迎信息框，输入区可直接输入；随着交流增加，它会自然滚入历史上方。用户消息用 `❯`、模型消息用 `●` 区分；回答会轻量渲染标题、列表、引用和代码块。连续的普通工具调用默认折叠成一条摘要；点击摘要可查看调用列表，再点击每条调用的 `▸/▾` 可展开它的输出，`Ctrl+O` 可展开/收起最近工具的详情。失败、取消、权限和 BLOCK 会单独显示。输入 `/details` 可列出调用，输入 `/details <call-id>` 会从已保存的 Session 事实展开详情，不会重新执行工具。Enter 发送消息，Shift+Enter 插入换行；滚轮、PageUp/PageDown 可浏览历史，Ctrl+End 回到最新消息。输入 `/exit` 退出 TUI 时，已显示的对话会留在终端滚动回溯中，Session 也仍可恢复。等待权限时输入 `1`（允许一次）、`2`（本会话允许）、`3`（拒绝）后按 Enter，也兼容 `allow`、`session`、`prefix`（如适用）和 `deny`。它不包含文件编辑器或多标签页。
+TUI 启动后会显示欢迎框，输入区可以直接输入。首次打开新的工作区会先确认是否信任该目录。
+
+- 用户消息以 `❯` 开头，模型消息以 `●` 开头；
+- 工具调用默认折叠，点击 `▸/▾` 或使用 `Ctrl+O` 查看详情；
+- `/details <call-id>` 查看某次工具调用的完整信息；
+- Enter 发送，Shift+Enter 换行；等待权限时输入 `1`、`2` 或 `3` 后按 Enter；
+- `/exit` 退出 TUI，已显示的对话会保留在终端回溯中。
 
 ## 先试一次只读分析
 
