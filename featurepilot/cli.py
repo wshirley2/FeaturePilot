@@ -24,11 +24,14 @@ from .runtime import RuntimeBootstrap, RuntimeBootstrapInput
 from .sessions import SessionStore
 from .trust import confirm_workspace_access
 from .tui import FeaturePilotTui, tui_supported
+from .user_config import load_user_config, run_setup_wizard
 from .workspace import CopyWorkspaceBackend, WorkspaceService
 
 _PLAN_COMMANDS = {"chat", "create", "list", "show", "approve", "reject", "regenerate"}
 _DEFAULT_STORE_DIR = Path(".featurepilot/plans")
-_TOP_LEVEL_COMMANDS = {"chat", "run", "status", "profile", "plan", "plans", "workspace", "sessions", "session"}
+_TOP_LEVEL_COMMANDS = {
+    "chat", "run", "status", "profile", "plan", "plans", "workspace", "sessions", "session", "init", "reconfigure",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=__version__)
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("status", help="Show the current FeaturePilot capabilities.")
+    subparsers.add_parser("init", help="Create user-level provider configuration with an interactive wizard.")
+    subparsers.add_parser("reconfigure", help="Repair or replace user-level provider configuration.")
 
     chat_parser = subparsers.add_parser("chat", help="Start an interactive coding-agent chat in a repository.")
     chat_parser.add_argument("repository", nargs="?", type=Path, default=Path("."), help="Repository directory.")
@@ -174,7 +179,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(_normalize_command(argv))
+    raw_values = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(_normalize_command(raw_values))
+
+    if args.command in {"init", "reconfigure"}:
+        run_setup_wizard(repairing=args.command == "reconfigure")
+        return 0
+
+    # Only the bare command changes its presentation default.  Explicit
+    # `featurepilot chat` and `featurepilot chat --tui` remain compatible.
+    if not raw_values:
+        state = load_user_config()
+        if not state.is_complete:
+            if state.problem:
+                print(state.problem, file=sys.stderr)
+            run_setup_wizard(repairing=state.problem != "配置文件不存在")
+        args.tui = True
 
     if args.command == "status":
         print("FeaturePilot can profile repositories and manage reviewable implementation plans.")

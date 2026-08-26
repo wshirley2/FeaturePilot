@@ -27,6 +27,7 @@ from .runtime_contracts import (
     TaskRuntimeResult,
 )
 from .sessions import SessionEventSink, SessionProjection, SessionStore
+from .user_config import resolve_runtime_config
 
 ProviderFactory = Callable[[Config], object]
 _CHAT_TOOL_NAMES = ("read_file", "glob", "grep", "edit_file", "write_file", "bash", "now")
@@ -224,17 +225,11 @@ class RuntimeBootstrap:
             raise ValueError(f"Source repository directory does not exist: {source_repository}")
         _validate_runtime_scope(mode, inputs.task_id, inputs.run_id)
 
-        config = Config.from_env()
-        if inputs.model:
-            config.model = inputs.model
-        elif featurepilot_model := os.getenv("FEATUREPILOT_MODEL"):
-            # FeaturePilot owns the public model setting. Config.from_env()
-            # still supplies CORECODER_MODEL as a compatibility fallback.
-            config.model = featurepilot_model
-        if inputs.base_url:
-            config.base_url = inputs.base_url
-        if inputs.api_key:
-            config.api_key = inputs.api_key
+        config = resolve_runtime_config(
+            model=inputs.model,
+            base_url=inputs.base_url,
+            api_key=inputs.api_key,
+        )
 
         if self.provider_factory is None and not config.api_key:
             raise ValueError(

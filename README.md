@@ -10,6 +10,33 @@ FeaturePilot 是一个在终端里使用的代码助手。给它一个本地仓�
 
 需要 Python 3.10 或更高版本。下面以 PowerShell 为例：
 
+### 快速体验
+
+当前尚未发布到 PyPI 时，直接从 GitHub 安装即可；pip 会在后台下载并构建，不会在当前目录留下仓库：
+
+```powershell
+py -m pip install "git+https://github.com/wshirley2/FeaturePilot.git"
+featurepilot
+```
+
+更推荐只安装命令行工具的用户使用 [pipx](https://pipx.pypa.io/)；它会为 FeaturePilot 创建独立环境：
+
+```powershell
+pipx install "git+https://github.com/wshirley2/FeaturePilot.git"
+featurepilot
+```
+
+首次启动会进入 Provider 配置向导。以后升级时分别使用：
+
+```powershell
+py -m pip install --upgrade "git+https://github.com/wshirley2/FeaturePilot.git"
+pipx upgrade --spec "git+https://github.com/wshirley2/FeaturePilot.git" featurepilot
+```
+
+项目正式发布到 PyPI 后，上述地址可简化为 `pipx install featurepilot`。
+
+### 从源码安装与开发
+
 ```powershell
 git clone https://github.com/wshirley2/FeaturePilot.git
 cd FeaturePilot
@@ -19,7 +46,25 @@ python -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-在项目根目录创建 `.env`。如果使用 DeepSeek：
+首次安装后，直接运行主入口会进入一次性的配置向导：
+
+```powershell
+featurepilot
+```
+
+向导保存 Provider、Base URL、Model 和 API Key 到当前用户目录：Windows 为
+`%APPDATA%\FeaturePilot\config.json`，Linux/macOS 为
+`~/.config/featurepilot/config.json`。API Key 不会打印、提交或写入安装包。之后
+`featurepilot` 是默认的 TUI 入口；非交互终端会自动回退到普通文本 Chat。
+
+也可以随时显式初始化或修复配置：
+
+```powershell
+featurepilot init
+featurepilot reconfigure
+```
+
+项目根目录的 `.env` 仍可作为团队共享的最低优先级默认值。如果使用 DeepSeek：
 
 ```dotenv
 OPENAI_API_KEY=你的密钥
@@ -27,7 +72,7 @@ OPENAI_BASE_URL=https://api.deepseek.com
 FEATUREPILOT_MODEL=deepseek-v4-flash
 ```
 
-这里的模型名会原样显示在 Chat 和 `/status` 中。当前 DeepSeek 配置可使用
+配置优先级固定为：`CLI 参数 > 环境变量 > 用户配置 > 项目 .env`。这里的模型名会原样显示在 Chat 和 `/status` 中。当前 DeepSeek 配置可使用
 `deepseek-v4-flash` 或 `deepseek-v4-pro`；也可以通过 `--api-key`、`--base-url`
 和 `-m` 临时覆盖这些配置。
 
