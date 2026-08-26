@@ -13,6 +13,7 @@ from prompt_toolkit.key_binding.key_processor import KeyPress
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType, MouseModifier
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.utils import get_cwidth
 
 from corecoder.events import RuntimeEvent, RuntimeEventType
 from corecoder.permissions import PermissionDecision, PermissionEffect, PermissionRequest
@@ -335,7 +336,23 @@ def test_tui_user_marker_is_not_highlighted_but_question_body_is(tmp_path):
     assert fragments[0] == ("class:transcript", "❯ you")
     assert ("class:user", "\n  ") in fragments
     assert ("class:user", "Please inspect README") in fragments
-    assert ("class:user", " " * (40 - len("Please inspect README") - 2)) in fragments
+    assert ("class:user", " " * (40 - get_cwidth("Please inspect README") - 2)) in fragments
+
+
+def test_tui_user_background_uses_terminal_width_for_cjk_and_emoji(tmp_path):
+    store = SessionStore(tmp_path / "sessions")
+    store.create("tui-session", repository_root=tmp_path, model="fake-model")
+    tui = FeaturePilotTui()
+    tui.bind_runtime(_runtime(tmp_path, store, "tui-session"))
+    tui.conversation.render_info = SimpleNamespace(window_width=24)
+
+    for body in ("你现在是什么模型", "模型 🤖"):
+        entry = tui._append_transcript("you", body, kind="user")
+        fragments = tui._entry_fragments(entry)
+        body_fragments = fragments[1:]
+        rendered_line = "".join(text for _style, text in body_fragments).split("\n", maxsplit=1)[1]
+
+        assert get_cwidth(rendered_line) == 24
 
 
 def test_tui_keeps_failed_and_blocked_tool_calls_out_of_folded_groups(tmp_path):
@@ -402,23 +419,23 @@ def test_tui_shift_enter_inserts_a_newline_and_input_has_bottom_divider(tmp_path
             application.exit()
 
         application.run(pre_run=pre_run)
+        assert tui.input.window.height.max == 2
+
+        tui.input.buffer.text = "line one\nline two\nline three"
+        application.run(pre_run=application.exit)
+        assert tui.input.window.render_info is not None
+        assert tui.input.window.render_info.window_height >= 3
+
+        tui.input.buffer.text = "line one"
+        application.run(pre_run=application.exit)
+        assert tui.input.window.render_info is not None
+        assert tui.input.window.render_info.window_height == 1
 
     assert state == ["first line\nsecond line"] * 3
     children = application.layout.container.children
     assert children[-1].char == "─"
     assert not tui.input.window.dont_extend_width()
-    assert tui.input.window.height.max == 2
     assert not children[-1].dont_extend_width()
-
-    tui.input.buffer.text = "line one\nline two\nline three"
-    application.run(pre_run=application.exit)
-    assert tui.input.window.render_info is not None
-    assert tui.input.window.render_info.window_height >= 3
-
-    tui.input.buffer.text = "line one"
-    application.run(pre_run=application.exit)
-    assert tui.input.window.render_info is not None
-    assert tui.input.window.render_info.window_height == 1
 
 
 def test_tui_preserves_windows_shift_enter_as_a_newline_shortcut():

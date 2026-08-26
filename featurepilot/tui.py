@@ -28,6 +28,7 @@ from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.mouse_events import MouseEventType, MouseModifier
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import TextArea
 
 from corecoder.events import RuntimeEvent, RuntimeEventType
@@ -858,7 +859,7 @@ class FeaturePilotTui:
                 info = self.conversation.render_info
                 width = getattr(info, "window_width", 0) if info is not None else 0
                 if width:
-                    fragments.append((style, " " * max(0, width - len(line.plain) - 2)))
+                    fragments.append((style, " " * max(0, width - get_cwidth(line.plain) - 2)))
         return fragments
 
     def _tool_plain_lines(self, activity: _ToolActivity, *, prefix: str) -> list[str]:
