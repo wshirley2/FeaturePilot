@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "suite": "FeaturePilot E2-lite deterministic baseline",
   "repository_fixture": "benchmarks/cli_data_tool",
   "cases": [
@@ -7,6 +7,7 @@
       "id": "chat-read-only",
       "title": "Chat 只读分析",
       "mode": "chat",
+      "category": "chat",
       "test": "tests/featurepilot/test_chat.py::test_chat_read_only_inspects_benchmark_without_modifying_files",
       "expected": {
         "source_repository": "unchanged",
@@ -18,6 +19,7 @@
       "id": "chat-approved-change",
       "title": "Chat 批准修改并验证",
       "mode": "chat",
+      "category": "permission",
       "test": "tests/featurepilot/test_chat.py::test_chat_end_to_end_reads_edits_validates_and_continues_without_network",
       "expected": {
         "source_repository": "modified_after_approval",
@@ -29,6 +31,7 @@
       "id": "chat-denied-write",
       "title": "Chat 拒绝写入",
       "mode": "chat",
+      "category": "permission",
       "test": "tests/featurepilot/test_chat.py::test_rejected_write_stops_the_current_turn_without_retrying_tools",
       "expected": {
         "source_repository": "unchanged",
@@ -40,12 +43,81 @@
       "id": "managed-run-isolation",
       "title": "Managed Run 审批、隔离执行与产物保留",
       "mode": "managed_run",
+      "category": "managed_run",
       "test": "tests/featurepilot/test_plan_chat.py::test_plan_chat_requires_explicit_approval_then_runs_in_workspace",
       "expected": {
         "source_repository": "unchanged",
         "workspace": "created",
         "validation": "passed",
         "artifacts": ["run.json", "events.jsonl"]
+      }
+    },
+    {
+      "id": "c5-safe-read-concurrency",
+      "title": "C5 安全读取并发且快于串行基线",
+      "mode": "agent",
+      "category": "c5",
+      "test": "tests/test_tool_execution.py::test_multiple_reads_overlap_and_beat_a_serial_baseline",
+      "expected": {
+        "safe_reads_overlap": true,
+        "faster_than_serial_baseline": true
+      }
+    },
+    {
+      "id": "c5-read-write-barrier",
+      "title": "C5 读取与写入串行屏障",
+      "mode": "agent",
+      "category": "c5",
+      "test": "tests/test_tool_execution.py::test_read_and_write_do_not_overlap",
+      "expected": {
+        "read_write_overlap": false,
+        "execution_order": ["read", "write"]
+      }
+    },
+    {
+      "id": "c5-unknown-exclusive",
+      "title": "C5 未声明工具保守独占",
+      "mode": "agent",
+      "category": "c5",
+      "test": "tests/test_tool_execution.py::test_unknown_tools_default_to_serial_execution",
+      "expected": {
+        "unknown_tools_overlap": false,
+        "concurrency": "exclusive"
+      }
+    },
+    {
+      "id": "c5-stable-result-event-order",
+      "title": "C5 并发读取的结果与事件顺序稳定",
+      "mode": "agent",
+      "category": "c5",
+      "test": "tests/test_tool_execution.py::test_results_and_events_follow_model_order_when_reads_finish_out_of_order",
+      "expected": {
+        "completion_order": "may_differ",
+        "tool_result_order": "model_call_order",
+        "runtime_event_order": "model_call_order"
+      }
+    },
+    {
+      "id": "c5-block-rejection-stops-effects",
+      "title": "C5 BLOCK 或拒绝后不启动后续副作用",
+      "mode": "agent",
+      "category": "c5",
+      "test": "tests/test_tool_execution.py::test_block_or_rejection_does_not_start_later_side_effect_calls",
+      "expected": {
+        "later_side_effect_started": false,
+        "unstarted_tool_reply": "present"
+      }
+    },
+    {
+      "id": "c5-cancellation-stops-effects",
+      "title": "C5 取消后不启动后续副作用",
+      "mode": "agent",
+      "category": "c5",
+      "test": "tests/test_tool_execution.py::test_cancellation_does_not_start_the_next_side_effect_and_keeps_tool_replies",
+      "expected": {
+        "terminal_status": "cancelled",
+        "later_side_effect_started": false,
+        "tool_replies_complete": true
       }
     }
   ]

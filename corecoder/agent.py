@@ -12,6 +12,7 @@ which means it's done working and ready to report back.
 import concurrent.futures
 import copy
 import inspect
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -22,6 +23,12 @@ from .events import EventSink, NullEventSink, RuntimeEvent, RuntimeEventType
 from .llm import LLM
 from .prompt import system_prompt
 from .runtime_control import CancellationToken, RuntimeCancelled, RuntimeLimitExceeded, RuntimeLimits
+from .tool_execution import (
+    ToolExecutionDescription,
+    ToolExecutionPlan,
+    declared_tool_description,
+    default_tool_description,
+)
 from .tools import ALL_TOOLS
 from .tools.agent import AgentTool
 from .tools.base import Tool
@@ -57,6 +64,35 @@ class ToolExecutionContext:
             ))
         except Exception:
             pass
+
+
+class _BufferedEventSink:
+    """Collect executor events until Agent can publish them in Tool Call order."""
+
+    def __init__(self) -> None:
+        self._events: list[RuntimeEvent] = []
+        self._lock = threading.Lock()
+
+    def emit(self, event: RuntimeEvent) -> None:
+        with self._lock:
+            self._events.append(event)
+
+    def flush_to(self, sink: EventSink) -> None:
+        with self._lock:
+            events = list(self._events)
+            self._events.clear()
+        for event in events:
+            try:
+                sink.emit(event)
+            except Exception:
+                pass
+
+
+@dataclass(frozen=True, slots=True)
+class _PlannedToolResults:
+    results: list[str]
+    stop_message: str | None = None
+    cancelled: bool = False
 
 
 class Agent:
@@ -285,22 +321,21 @@ class Agent:
                     )
                     self._check_tool_round_limit(tool_rounds)
                     tool_rounds += 1
-                    # parallel execution for multiple tool calls
-                    results = self._exec_tools_parallel(
+                    planned = self._exec_tools_in_plan(
                         resp.tool_calls,
-                        on_tool,
                         turn_id=turn_id,
                         round_index=round_index,
-                        assistant_content=resp.content,
-                        emit_requested=False,
+                        cancellation_token=token,
                     )
-                    for tc, result in zip(resp.tool_calls, results):
+                    for tc, result in zip(resp.tool_calls, planned.results):
                         self.messages.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "content": result,
                         })
-                    stop_message = self._consume_tool_turn_stop()
+                    if planned.cancelled:
+                        token.raise_if_cancelled()
+                    stop_message = planned.stop_message
                     if stop_message is not None:
                         return self._finish_stopped_turn(turn_id, round_index, stop_message)
                 pending_tool_calls = []
@@ -472,7 +507,14 @@ class Agent:
         )
         return result
 
-    def _exec_tool(self, tc, *, turn_id: str | None = None, round_index: int = 0) -> str:
+    def _exec_tool(
+        self,
+        tc,
+        *,
+        turn_id: str | None = None,
+        round_index: int = 0,
+        execution_event_sink: EventSink | None = None,
+    ) -> str:
         """Execute a single tool call, returning the result string."""
         tool = self._tool_by_name.get(tc.name)
         if tool is None:
@@ -493,7 +535,7 @@ class Agent:
                             session_id=self.session_id,
                             turn_id=turn_id,
                             round_index=round_index,
-                            event_sink=self.event_sink,
+                            event_sink=execution_event_sink or self.event_sink,
                         )
                     return execute_call(tool, dict(tc.arguments), **kwargs)
                 return self.tool_executor.execute(tool, dict(tc.arguments))
@@ -501,53 +543,116 @@ class Agent:
         except Exception as e:
             return f"Error executing {tc.name}: {e}"
 
-    def _exec_tools_parallel(
+    def _describe_tool_call(self, tc) -> ToolExecutionDescription:
+        """Resolve a scheduler description without executing a Tool effect."""
+
+        tool = self._tool_by_name.get(tc.name)
+        if tool is None:
+            return ToolExecutionDescription.unknown()
+        declared = declared_tool_description(tool, dict(tc.arguments))
+        if declared is not None:
+            return declared
+        describe_call = getattr(self.tool_executor, "describe_call", None)
+        if callable(describe_call):
+            try:
+                described = describe_call(tool, dict(tc.arguments))
+            except Exception:
+                return ToolExecutionDescription.unknown()
+            if isinstance(described, ToolExecutionDescription):
+                return described
+            if described is not None:
+                return ToolExecutionDescription.unknown()
+        return default_tool_description(tc.name, dict(tc.arguments))
+
+    def _exec_tools_in_plan(
         self,
         tool_calls,
-        on_tool=None,
         *,
-        turn_id: str | None = None,
-        round_index: int = 0,
-        assistant_content: str = "",
-        emit_requested: bool = True,
-    ) -> list[str]:
-        """Run multiple tool calls concurrently using threads.
+        turn_id: str,
+        round_index: int,
+        cancellation_token: CancellationToken,
+    ) -> _PlannedToolResults:
+        """Execute contiguous safe reads concurrently, with exclusive barriers.
 
-        This is inspired by Claude Code's StreamingToolExecutor which starts
-        executing tools while the model is still generating.  We simplify to:
-        when the model returns N tool calls at once, run them in parallel.
+        The provider has already returned the complete Tool Call round.  This
+        method never speculates on streaming output and only starts a later
+        wave after the previous wave completed without cancellation or an
+        application-requested stop.
         """
-        for tc in tool_calls:
-            if turn_id is not None and emit_requested:
-                self._emit_tool_requested(
-                    tc,
-                    turn_id,
-                    round_index,
-                    on_tool,
-                    assistant_content=assistant_content,
-                )
-            elif on_tool:
-                on_tool(tc.name, tc.arguments)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [
-                pool.submit(self._exec_tool, tc, turn_id=turn_id, round_index=round_index)
-                for tc in tool_calls
-            ]
-            results = [future.result() for future in futures]
+        descriptions = [self._describe_tool_call(tc) for tc in tool_calls]
+        plan = ToolExecutionPlan.build(descriptions)
+        results = ["[not executed]" for _ in tool_calls]
+        buffered_events = [_BufferedEventSink() for _ in tool_calls]
+        started: set[int] = set()
+        cancelled = False
+        stop_message: str | None = None
 
-        # Keep completion events in provider order, matching the Tool Result
-        # messages that Agent.chat appends immediately afterwards.
-        if turn_id is not None:
-            for tc, result in zip(tool_calls, results):
-                self._emit_event(
-                    RuntimeEventType.TOOL_COMPLETED,
-                    turn_id,
-                    round_index,
-                    tool_call_id=tc.id,
-                    payload={"tool_name": tc.name, "result": result, "interrupted": False},
+        for wave in plan.waves:
+            if cancellation_token.cancelled:
+                cancelled = True
+                break
+            if wave.concurrent:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(wave.indexes))) as pool:
+                    futures = {
+                        index: pool.submit(
+                            self._exec_tool,
+                            tool_calls[index],
+                            turn_id=turn_id,
+                            round_index=round_index,
+                            execution_event_sink=buffered_events[index],
+                        )
+                        for index in wave.indexes
+                    }
+                    for index in wave.indexes:
+                        started.add(index)
+                        results[index] = futures[index].result()
+            else:
+                index = wave.indexes[0]
+                started.add(index)
+                results[index] = self._exec_tool(
+                    tool_calls[index],
+                    turn_id=turn_id,
+                    round_index=round_index,
+                    execution_event_sink=buffered_events[index],
                 )
-        return results
+
+            # The application executor may emit execution-control facts from a
+            # worker. Publish them only after the whole wave and in provider
+            # order so Session replay is deterministic.
+            for index in wave.indexes:
+                buffered_events[index].flush_to(self.event_sink)
+            if cancellation_token.cancelled:
+                cancelled = True
+                break
+            stop_message = self._consume_tool_turn_stop()
+            if stop_message is not None:
+                break
+
+        if cancelled:
+            for index in range(len(tool_calls)):
+                if index not in started:
+                    results[index] = "[cancelled before execution]"
+        elif stop_message is not None:
+            for index in range(len(tool_calls)):
+                if index not in started:
+                    results[index] = "[not executed: an earlier call stopped this turn]"
+
+        # Tool completions and the Tool messages appended by ``chat`` use the
+        # original model order even if reads finished in a different order.
+        for index, (tc, result) in enumerate(zip(tool_calls, results)):
+            self._emit_event(
+                RuntimeEventType.TOOL_COMPLETED,
+                turn_id,
+                round_index,
+                tool_call_id=tc.id,
+                payload={
+                    "tool_name": tc.name,
+                    "result": result,
+                    "interrupted": cancelled and index not in started,
+                },
+            )
+        return _PlannedToolResults(results, stop_message=stop_message, cancelled=cancelled)
 
     def _answer_pending_tool_calls(self, tool_calls):
         """Backfill a tool reply for every call that didn't get one.

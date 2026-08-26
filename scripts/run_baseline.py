@@ -7,19 +7,27 @@ import json
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "benchmarks" / "baseline_cases.json"
-DEFAULT_OUTPUT = ROOT / ".tmp" / "baseline" / "latest.json"
+DEFAULT_WORK_DIR = ROOT / ".featurepilot" / "e2-lite"
+DEFAULT_OUTPUT = DEFAULT_WORK_DIR / "latest.json"
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run FeaturePilot's deterministic E2-lite baseline.")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help="Baseline case manifest.")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="JSON result path.")
+    parser.add_argument(
+        "--work-dir",
+        type=Path,
+        default=DEFAULT_WORK_DIR,
+        help="Parent directory for this run's unique pytest temporary directory.",
+    )
     parser.add_argument("--case", action="append", dest="case_ids", help="Run only one case id; repeatable.")
     parser.add_argument("--list", action="store_true", help="List cases without running them.")
     return parser
@@ -45,10 +53,15 @@ def _tail(value: str, limit: int = 2000) -> str:
     return value[-limit:] if len(value) > limit else value
 
 
-def run_case(case: dict[str, object], index: int) -> dict[str, object]:
+def _create_run_directory(work_dir: Path) -> Path:
+    work_dir.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix="run-", dir=work_dir))
+
+
+def run_case(case: dict[str, object], index: int, run_directory: Path) -> dict[str, object]:
     case_id = str(case["id"])
     test = str(case["test"])
-    base_temp = ROOT / ".tmp" / "baseline" / f"{index:02d}-{case_id}"
+    base_temp = run_directory / f"{index:02d}-{case_id}"
     command = [
         sys.executable,
         "-m",
@@ -59,7 +72,6 @@ def run_case(case: dict[str, object], index: int) -> dict[str, object]:
         "no:cacheprovider",
         f"--basetemp={base_temp}",
     ]
-    base_temp.parent.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
     result = subprocess.run(
         command,
@@ -75,6 +87,7 @@ def run_case(case: dict[str, object], index: int) -> dict[str, object]:
         "id": case_id,
         "title": case.get("title"),
         "mode": case.get("mode"),
+        "category": case.get("category", "uncategorized"),
         "test": test,
         "status": "passed" if result.returncode == 0 else "failed",
         "duration_seconds": round(duration, 3),
@@ -97,17 +110,29 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{case['id']}: {case.get('title', '')} ({case['mode']})")
         return 0
 
+    run_directory = _create_run_directory(args.work_dir)
     results = []
     for index, case in enumerate(cases, start=1):
         print(f"[{index}/{len(cases)}] {case['id']}: {case.get('title', '')}")
-        result = run_case(case, index)
+        result = run_case(case, index, run_directory)
         results.append(result)
         print(f"  {result['status']} ({result['duration_seconds']}s)")
+
+    categories: dict[str, dict[str, int]] = {}
+    for result in results:
+        category = str(result["category"])
+        bucket = categories.setdefault(category, {"total": 0, "passed": 0, "failed": 0})
+        bucket["total"] += 1
+        if result["status"] == "passed":
+            bucket["passed"] += 1
+        else:
+            bucket["failed"] += 1
 
     summary = {
         "total": len(results),
         "passed": sum(result["status"] == "passed" for result in results),
         "failed": sum(result["status"] != "passed" for result in results),
+        "categories": categories,
     }
     payload = {
         "schema_version": 1,
@@ -115,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "python": sys.version.split()[0],
         "platform": platform.platform(),
+        "run_directory": str(run_directory),
         "results": results,
         "summary": summary,
     }

@@ -17,6 +17,7 @@ from corecoder.permissions import (
     PermissionManager,
     PermissionRequest,
 )
+from corecoder.tool_execution import ToolConcurrency, ToolEffect, ToolExecutionDescription
 from corecoder.tools.base import Tool
 from corecoder.tools.bash import BashTool
 from corecoder.tools.edit import _changed_files
@@ -97,6 +98,43 @@ class RepositoryToolExecutor:
 
     def execute(self, tool: Tool, arguments: dict[str, Any]) -> str:
         return self.execute_call(tool, arguments, tool_call_id=uuid4().hex)
+
+    def describe_call(self, tool: Tool, arguments: dict[str, Any]) -> ToolExecutionDescription | None:
+        """Expose conservative scheduling facts without changing C3 enforcement.
+
+        The Agent uses this before executing a fully returned Tool Call round.
+        Unknown tools deliberately return ``None`` so the generic scheduler
+        falls back to UNKNOWN + EXCLUSIVE.
+        """
+
+        effect = {
+            "read_file": ToolEffect.READ,
+            "glob": ToolEffect.READ,
+            "grep": ToolEffect.READ,
+            "now": ToolEffect.READ,
+            "edit_file": ToolEffect.WRITE,
+            "write_file": ToolEffect.WRITE,
+            "bash": ToolEffect.EXECUTE,
+            "fetch_url": ToolEffect.NETWORK,
+            "agent": ToolEffect.DELEGATE,
+        }.get(tool.name)
+        if effect is None:
+            return None
+        cwd = str(self.repository_root)
+        if tool.name == "now":
+            return ToolExecutionDescription(ToolEffect.READ, ToolConcurrency.SAFE, cwd=cwd)
+        path_argument = _PATH_ARGUMENTS.get(tool.name)
+        if path_argument is not None:
+            boundary, resources, resolved = self._normalized_path_fact(arguments.get(path_argument, "."))
+            if boundary in {PathBoundary.REPOSITORY, PathBoundary.APPROVED_ARTIFACT} and resolved is not None:
+                return ToolExecutionDescription(
+                    effect,
+                    ToolConcurrency.SAFE if effect is ToolEffect.READ else ToolConcurrency.EXCLUSIVE,
+                    (str(resolved),),
+                    cwd,
+                )
+            return ToolExecutionDescription(effect, ToolConcurrency.EXCLUSIVE, resources, cwd, resources_known=False)
+        return ToolExecutionDescription(effect, ToolConcurrency.EXCLUSIVE, cwd=cwd, resources_known=False)
 
     def execute_call(
         self,
