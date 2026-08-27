@@ -30,11 +30,13 @@ dependencies = [
     "prompt_toolkit>=3.0",
     "python-dotenv>=1.0",
     "pydantic>=2.0,<3.0",
+    "PyYAML>=6.0,<7.0",
     "tomli>=2.0.0; python_version < '3.11'",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["techpilot"]
+include = ["techpilot/learning/skills/**/*.md"]
 
 [project.optional-dependencies]
 litellm = ["litellm>=1.60.0,<2.0.0"]
@@ -53,6 +55,7 @@ line-length = 130
 target-version = "py310"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 norecursedirs = ["runs", ".techpilot", ".git", ".venv", "venv", ".tmp", ".pytest_cache"]
 
 [tool.ruff.lint]

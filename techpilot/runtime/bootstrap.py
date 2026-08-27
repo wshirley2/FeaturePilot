@@ -70,6 +70,7 @@ class TaskRuntime:
     session_store: SessionStore | None = None
     session_sink: SessionEventSink | None = None
     base_system_context: str = ""
+    role_context: str | None = None
     recovery_notices: list[str] = field(default_factory=list)
 
     @property
@@ -116,6 +117,28 @@ class TaskRuntime:
 
         return self.agent.chat(user_input, cancellation_token=cancellation_token)
 
+    def activate_role(self, role_id: str, role_context: str) -> None:
+        """Activate a code-owned Role without creating a second Agent Runtime."""
+
+        self.role_context = role_context
+        self._refresh_system_context()
+        if self.session_sink is not None:
+            self.session_sink.record("role_activated", self.agent.session_id, {"role_id": role_id})
+
+    def clear_role(self) -> None:
+        """Return subsequent turns to the default Runtime role."""
+
+        if self.role_context is None:
+            return
+        self.role_context = None
+        self._refresh_system_context()
+        if self.session_sink is not None:
+            self.session_sink.record("role_cleared", self.agent.session_id)
+
+    def _refresh_system_context(self) -> None:
+        context = "\n\n".join(part for part in (self.base_system_context, self.role_context) if part)
+        self.agent.update_system_context(_with_runtime_identity(context, self.mode, self.config.model))
+
     def consume_recovery_notices(self) -> list[str]:
         """Return compatibility notices that must be shown after Session recovery."""
 
@@ -138,7 +161,7 @@ class TaskRuntime:
             self.agent.context.max_tokens = self.config.max_context_tokens
         if hasattr(self.agent.llm, "model"):
             self.agent.llm.model = model
-        self.agent.update_system_context(_with_runtime_identity(self.base_system_context, self.mode, model))
+        self._refresh_system_context()
         if record and self.session_sink is not None:
             self.session_sink.record("session_model_changed", self.agent.session_id, {"model": model})
 
