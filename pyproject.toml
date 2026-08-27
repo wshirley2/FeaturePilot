@@ -34,7 +34,7 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["corecoder", "featurepilot"]
+packages = ["featurepilot"]
 
 [project.optional-dependencies]
 litellm = ["litellm>=1.60.0,<2.0.0"]

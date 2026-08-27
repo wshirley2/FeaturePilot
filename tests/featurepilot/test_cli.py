@@ -2,10 +2,10 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from featurepilot.advanced.planning import PlanningService
 from featurepilot.cli import main
-from featurepilot.planning import PlanningService
 from featurepilot.runtime import RuntimeBootstrap
-from featurepilot.sessions import SessionStore
+from featurepilot.runtime.sessions import SessionStore
 
 BENCHMARK_ROOT = Path(__file__).parents[2] / "benchmarks" / "cli_data_tool"
 
@@ -174,7 +174,7 @@ def test_plan_chat_command_builds_the_conversational_session(tmp_path, monkeypat
 
 
 def test_default_chat_entry_does_not_inject_an_embedded_plan_session(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = tmp_path / "repository"
     repository.mkdir()
     captured = {}
@@ -211,7 +211,7 @@ def test_default_chat_entry_does_not_inject_an_embedded_plan_session(tmp_path, m
 
 
 def test_chat_tui_option_uses_the_same_runtime_bootstrap(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = tmp_path / "repository"
     repository.mkdir()
     captured = {}
@@ -239,7 +239,7 @@ def test_chat_tui_option_uses_the_same_runtime_bootstrap(tmp_path, monkeypatch):
 
 
 def test_chat_tui_option_falls_back_to_the_standard_cli_without_a_tty(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = tmp_path / "repository"
     repository.mkdir()
 

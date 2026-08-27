@@ -7,15 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from corecoder.agent import Agent
-from corecoder.llm import LLM
-from corecoder.runtime_control import CancellationToken
-from corecoder.tools.base import Tool
-from corecoder.tools.glob_tool import GlobTool
-from corecoder.tools.grep import GrepTool
-from corecoder.tools.read import ReadFileTool
-from corecoder.tools.write import WriteFileTool
+from featurepilot.advanced.workspace import Workspace
 from featurepilot.domain import Plan, PlanRecord, Run, Task
+from featurepilot.engine.agent import Agent
+from featurepilot.engine.llm import LLM
+from featurepilot.engine.runtime_control import CancellationToken
+from featurepilot.engine.tools.base import Tool
+from featurepilot.engine.tools.glob_tool import GlobTool
+from featurepilot.engine.tools.grep import GrepTool
+from featurepilot.engine.tools.read import ReadFileTool
+from featurepilot.engine.tools.write import WriteFileTool
 from featurepilot.execution import (
     ExecutionContext,
     ToolEffect,
@@ -25,7 +26,6 @@ from featurepilot.execution import (
     WorkspaceToolExecutor,
     build_featurepilot_tools,
 )
-from featurepilot.workspace import Workspace
 
 
 def _context(

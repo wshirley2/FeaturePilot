@@ -100,4 +100,4 @@ Session 默认保存在目标仓库的 `.featurepilot/sessions/` 下；可以用
 
 ## 来源与许可
 
-项目早期基于 [CoreCoder](https://github.com/he-yufeng/CoreCoder) 的最小 AgentLoop 继续开发；现阶段主要代码集中在 FeaturePilot 的 Runtime、权限、Session、Chat 和 CLI。原版权声明与 MIT 许可证保留在 [LICENSE](LICENSE) 中。
+项目早期参考 [CoreCoder](https://github.com/he-yufeng/CoreCoder) 的最小 AgentLoop 继续开发；当前运行内核已收敛到 `featurepilot.engine`，唯一公开命令和发行包均为 FeaturePilot。许可信息见 [LICENSE](LICENSE)。

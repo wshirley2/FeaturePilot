@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from corecoder.agent import Agent
-from corecoder.events import CallbackEventSink, RuntimeEvent, RuntimeEventType
-from corecoder.llm import LLMResponse, ToolCall
-from corecoder.runtime_control import CancellationToken, RuntimeLimits
-from corecoder.tools.base import Tool
-from featurepilot.runtime_contracts import RuntimeResultScope, RuntimeResultStatus, TaskRuntimeResult
-from featurepilot.sessions import SessionEvent, SessionEventSink, SessionStore
+from featurepilot.engine.agent import Agent
+from featurepilot.engine.events import CallbackEventSink, RuntimeEvent, RuntimeEventType
+from featurepilot.engine.llm import LLMResponse, ToolCall
+from featurepilot.engine.runtime_control import CancellationToken, RuntimeLimits
+from featurepilot.engine.tools.base import Tool
+from featurepilot.runtime.contracts import RuntimeResultScope, RuntimeResultStatus, TaskRuntimeResult
+from featurepilot.runtime.sessions import SessionEvent, SessionEventSink, SessionStore
 
 
 class EchoTool(Tool):

@@ -2,7 +2,7 @@ from io import StringIO
 
 from rich.console import Console
 
-from featurepilot.trust import WorkspaceTrustStore, confirm_workspace_access
+from featurepilot.safety.trust import WorkspaceTrustStore, confirm_workspace_access
 
 
 def test_workspace_trust_gate_accepts_enter_and_shows_canonical_path(tmp_path):

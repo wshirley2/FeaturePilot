@@ -6,10 +6,10 @@ import json
 
 import pytest
 
-from corecoder.agent import Agent
-from corecoder.events import CallbackEventSink, RuntimeEvent, RuntimeEventType
-from corecoder.llm import LLMResponse, ToolCall
-from corecoder.tools.base import Tool
+from featurepilot.engine.agent import Agent
+from featurepilot.engine.events import CallbackEventSink, RuntimeEvent, RuntimeEventType
+from featurepilot.engine.llm import LLMResponse, ToolCall
+from featurepilot.engine.tools.base import Tool
 
 
 class EchoTool(Tool):

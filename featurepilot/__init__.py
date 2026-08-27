@@ -2,8 +2,8 @@
 
 __version__ = "0.1.0"
 
-from .application import FeaturePilotApplication
-from .runtime_contracts import (
+from .runtime.application import FeaturePilotApplication
+from .runtime.contracts import (
     RuntimeMode,
     RuntimeResultScope,
     RuntimeResultStatus,

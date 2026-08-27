@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
+from featurepilot.advanced.planning import PlanStore
+from featurepilot.advanced.workspace import CopyWorkspaceBackend, WorkspaceCreationError, WorkspaceService
 from featurepilot.cli import main
 from featurepilot.domain import Plan, PlanRecord, Task
-from featurepilot.planning import PlanStore
-from featurepilot.workspace import CopyWorkspaceBackend, WorkspaceCreationError, WorkspaceService
 
 
 def _write_source_repository(root: Path) -> Path:
@@ -137,7 +137,7 @@ def test_copy_failure_removes_the_incomplete_run_and_reports_one_brief_error(tmp
             (str(source / "other.txt"), str(destination / "other.txt"), "second failure"),
         ])
 
-    monkeypatch.setattr("featurepilot.workspace.copy_backend.shutil.copytree", fail_after_partial_copy)
+    monkeypatch.setattr("featurepilot.advanced.workspace.copy_backend.shutil.copytree", fail_after_partial_copy)
 
     with pytest.raises(WorkspaceCreationError) as captured:
         backend.create(repository, "c" * 32, label="copy-failure")

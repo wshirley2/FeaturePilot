@@ -10,17 +10,17 @@ from pathlib import Path
 
 import pytest
 
-from corecoder.events import NullEventSink
-from corecoder.llm import LLMResponse, ToolCall
-from corecoder.runtime_control import CancellationToken, RuntimeLimits
+from featurepilot.advanced.managed import ManagedRunExecutionError, ManagedRunService
+from featurepilot.advanced.planning import PlanStore
+from featurepilot.advanced.workspace import CopyWorkspaceBackend, WorkspaceService
 from featurepilot.cli import main
 from featurepilot.domain import Plan, PlanRecord, Task
+from featurepilot.engine.events import NullEventSink
+from featurepilot.engine.llm import LLMResponse, ToolCall
+from featurepilot.engine.runtime_control import CancellationToken, RuntimeLimits
 from featurepilot.execution import ValidationCommandRunner, ValidationService, WorkspaceToolExecutor
-from featurepilot.managed import ManagedRunExecutionError, ManagedRunService
-from featurepilot.planning import PlanStore
 from featurepilot.runtime import RuntimeBootstrap
-from featurepilot.runtime_contracts import RuntimeMode, RuntimeResultScope, RuntimeResultStatus
-from featurepilot.workspace import CopyWorkspaceBackend, WorkspaceService
+from featurepilot.runtime.contracts import RuntimeMode, RuntimeResultScope, RuntimeResultStatus
 
 
 class FakeProvider:
@@ -112,7 +112,7 @@ def _events(path: Path) -> list[dict]:
 
 
 def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     store, record = _stored_plan(tmp_path, repository)
     provider = FakeProvider([
@@ -230,7 +230,7 @@ def test_approved_plan_runs_agent_in_isolated_workspace_and_persists_success(tmp
 
 @pytest.mark.parametrize("status", ["draft", "rejected"])
 def test_non_approved_plan_is_rejected_before_workspace_creation(tmp_path, monkeypatch, status):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     store, record = _stored_plan(tmp_path, repository, status=status)
     service = _service(tmp_path, store, FakeProvider([]))
@@ -242,7 +242,7 @@ def test_non_approved_plan_is_rejected_before_workspace_creation(tmp_path, monke
 
 
 def test_plan_outside_write_is_denied_while_run_can_finish(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     store, record = _stored_plan(tmp_path, repository)
     provider = FakeProvider([
@@ -268,7 +268,7 @@ def test_plan_outside_write_is_denied_while_run_can_finish(tmp_path, monkeypatch
 
 
 def test_provider_failure_persists_failed_run_and_retains_workspace(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     store, record = _stored_plan(tmp_path, repository)
     service = _service(tmp_path, store, FakeProvider([RuntimeError("provider unavailable")]))
@@ -299,7 +299,7 @@ def test_provider_failure_persists_failed_run_and_retains_workspace(tmp_path, mo
 
 
 def test_keyboard_interrupt_persists_cancelled_run_and_retains_workspace(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     store, record = _stored_plan(tmp_path, repository)
     service = _service(tmp_path, store, FakeProvider([KeyboardInterrupt()]))
@@ -321,7 +321,7 @@ def test_keyboard_interrupt_persists_cancelled_run_and_retains_workspace(tmp_pat
 
 
 def test_managed_runtime_limit_skips_validation_and_persists_control_facts(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     store, record = _stored_plan(tmp_path, repository)
     provider = FakeProvider([
@@ -362,7 +362,7 @@ def test_managed_runtime_limit_skips_validation_and_persists_control_facts(tmp_p
 
 
 def test_pre_cancelled_managed_runtime_skips_provider_and_validation(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     store, record = _stored_plan(tmp_path, repository)
     provider = FakeProvider([LLMResponse(content="must not run")])
@@ -389,7 +389,7 @@ def test_cancellation_during_validation_stops_command_and_persists_cancelled_run
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     commands = [
         [
@@ -444,7 +444,7 @@ def test_cancellation_during_validation_stops_command_and_persists_cancelled_run
 
 
 def test_run_cli_executes_approved_plan_with_the_shared_bootstrap(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     store, record = _stored_plan(tmp_path, repository)
     provider = FakeProvider([
@@ -486,7 +486,7 @@ def test_run_cli_executes_approved_plan_with_the_shared_bootstrap(tmp_path, monk
 
 
 def test_run_cli_returns_failure_when_system_validation_fails(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     store, record = _stored_plan(
         tmp_path,
@@ -519,7 +519,7 @@ def test_run_cli_returns_failure_when_system_validation_fails(tmp_path, monkeypa
 
 
 def test_validation_failure_marks_run_failed_and_preserves_all_command_results(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     commands = [
         ["python", "-c", "import sys; print('bad'); print('details', file=sys.stderr); sys.exit(3)"],
@@ -553,7 +553,7 @@ def test_validation_failure_marks_run_failed_and_preserves_all_command_results(t
 
 
 def test_validation_timeout_and_startup_error_are_distinct_artifact_results(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     commands = [
         ["python", "-c", "import time; time.sleep(1)"],

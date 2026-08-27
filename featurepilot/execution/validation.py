@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from corecoder.runtime_control import CancellationToken
+from featurepilot.engine.runtime_control import CancellationToken
 
 _PROCESS_POLL_SECONDS = 0.05
 _PROCESS_STOP_GRACE_SECONDS = 0.5

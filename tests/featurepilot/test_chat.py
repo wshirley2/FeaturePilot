@@ -12,16 +12,16 @@ from types import SimpleNamespace
 from prompt_toolkit.document import Document
 from rich.console import Console
 
-from corecoder.events import RuntimeEvent, RuntimeEventType
-from corecoder.llm import LLMResponse, ToolCall
-from corecoder.permissions import PermissionDecision
-from featurepilot.chat import ChatSession, SlashCommandCompleter, TerminalEventSink
-from featurepilot.chat_executor import RepositoryToolExecutor, _normalized_command
+from featurepilot.chat.executor import RepositoryToolExecutor, _normalized_command
+from featurepilot.chat.session import ChatSession, SlashCommandCompleter, TerminalEventSink
 from featurepilot.cli import _normalize_command
-from featurepilot.path_policy import ignored_child_names
+from featurepilot.engine.events import RuntimeEvent, RuntimeEventType
+from featurepilot.engine.llm import LLMResponse, ToolCall
+from featurepilot.engine.permissions import PermissionDecision
 from featurepilot.runtime import ChatRuntime, RuntimeBootstrap, RuntimeBootstrapInput, TaskRuntime
-from featurepilot.runtime_contracts import RuntimeMode
-from featurepilot.sessions import SessionEvent, SessionStore
+from featurepilot.runtime.contracts import RuntimeMode
+from featurepilot.runtime.sessions import SessionEvent, SessionStore
+from featurepilot.safety.paths import ignored_child_names
 
 BENCHMARK_ROOT = Path(__file__).parents[2] / "benchmarks" / "cli_data_tool"
 
@@ -406,7 +406,7 @@ def make_runtime(
 
 
 def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     provider = FakeProvider([LLMResponse(content="ok")])
     console = Console(file=StringIO(), force_terminal=False, color_system=None)
 
@@ -444,10 +444,9 @@ def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(tm
     }
 
 
-def test_featurepilot_model_setting_overrides_legacy_config_but_not_cli(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
-    monkeypatch.delenv("CORECODER_MAX_CONTEXT", raising=False)
-    monkeypatch.setenv("CORECODER_MODEL", "legacy-corecoder-model")
+def test_featurepilot_model_setting_and_cli_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
+    monkeypatch.delenv("FEATUREPILOT_MAX_CONTEXT", raising=False)
     monkeypatch.delenv("FEATUREPILOT_MODEL", raising=False)
     console = Console(file=StringIO(), force_terminal=False, color_system=None)
 
@@ -461,7 +460,7 @@ def test_featurepilot_model_setting_overrides_legacy_config_but_not_cli(tmp_path
             )
         )
 
-    assert build().config.model == "legacy-corecoder-model"
+    assert build().config.model == "gpt-5.5"
 
     monkeypatch.setenv("FEATUREPILOT_MODEL", "featurepilot-model")
     assert build().config.model == "featurepilot-model"
@@ -503,7 +502,7 @@ def test_default_cli_spelling_enters_chat_for_current_or_explicit_repository():
 
 
 def test_chat_read_only_inspects_benchmark_without_modifying_files(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = copy_benchmark(tmp_path / "cli_data_tool")
     read_path = "README.md"
     original = (repository / read_path).read_bytes()
@@ -524,7 +523,7 @@ def test_chat_read_only_inspects_benchmark_without_modifying_files(tmp_path, mon
 
 
 def test_chat_reads_dependency_manifest_directly_without_prompting_or_isolating(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = copy_benchmark(tmp_path / "cli_data_tool")
     provider = FakeProvider([
         LLMResponse(tool_calls=[ToolCall("read-manifest", "read_file", {"file_path": "pyproject.toml"})]),
@@ -545,7 +544,7 @@ def test_chat_reads_dependency_manifest_directly_without_prompting_or_isolating(
 
 
 def test_chat_directory_listing_command_executes_directly_without_prompting(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = copy_benchmark(tmp_path / "cli_data_tool")
     directory_command = "dir" if sys.platform == "win32" else "ls -la"
     provider = FakeProvider([
@@ -571,7 +570,7 @@ def test_directory_listing_commands_are_normalized_as_read_only_shell_commands()
 
 
 def test_chat_end_to_end_reads_edits_validates_and_continues_without_network(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = copy_benchmark(tmp_path / "cli_data_tool")
     read_path = "src/cli_data_tool/exporter.py"
     original = (repository / read_path).read_text(encoding="utf-8")
@@ -623,7 +622,7 @@ def test_chat_end_to_end_reads_edits_validates_and_continues_without_network(tmp
 
 
 def test_rejected_write_stops_the_current_turn_without_retrying_tools(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     target = tmp_path / "notes.txt"
     target.write_text("original\n", encoding="utf-8")
     provider = FakeProvider([
@@ -653,7 +652,7 @@ def test_rejected_write_stops_the_current_turn_without_retrying_tools(tmp_path, 
 
 
 def test_blocked_command_stops_the_turn_without_a_retry(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     provider = FakeProvider([
         LLMResponse(tool_calls=[ToolCall(
             "dangerous-command",
@@ -681,7 +680,7 @@ def test_blocked_command_stops_the_turn_without_a_retry(tmp_path, monkeypatch):
 
 
 def test_chat_blocks_patch_application_without_a_source_promotion_capability(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     target = tmp_path / "notes.txt"
     target.write_text("original\n", encoding="utf-8")
     provider = FakeProvider([
@@ -708,7 +707,7 @@ def test_chat_blocks_patch_application_without_a_source_promotion_capability(tmp
 
 
 def test_chat_blocks_patch_application_with_git_global_path_options(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     provider = FakeProvider([
         LLMResponse(tool_calls=[ToolCall(
             "apply-patch-in-worktree",
@@ -727,7 +726,7 @@ def test_chat_blocks_patch_application_with_git_global_path_options(tmp_path, mo
 
 
 def test_chat_execution_control_assesses_direct_and_confirm_before_effects(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     target = tmp_path / "notes.py"
     target.write_text("before\n", encoding="utf-8")
     provider = FakeProvider([
@@ -750,7 +749,7 @@ def test_chat_execution_control_assesses_direct_and_confirm_before_effects(tmp_p
 
 
 def test_chat_confirms_high_impact_lock_write_in_source_with_reasons(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     lock_file = tmp_path / "poetry.lock"
     lock_file.write_text("original\n", encoding="utf-8")
     prompt = AllowOncePrompt()
@@ -783,7 +782,7 @@ def test_chat_confirms_high_impact_lock_write_in_source_with_reasons(tmp_path, m
 
 
 def test_chat_rejection_keeps_high_impact_source_write_unexecuted(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     manifest = tmp_path / "pyproject.toml"
     manifest.write_text("[project]\nname = 'before'\n", encoding="utf-8")
     prompt = DenyPrompt()
@@ -808,7 +807,7 @@ def test_chat_rejection_keeps_high_impact_source_write_unexecuted(tmp_path, monk
 
 
 def test_resuming_legacy_pending_isolation_freezes_it_without_execution(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     session_id = "legacy-isolate"
     store = SessionStore(tmp_path / "sessions")
     store.create(session_id, repository_root=tmp_path, model="fake-model")
@@ -842,7 +841,7 @@ def test_resuming_legacy_pending_isolation_freezes_it_without_execution(tmp_path
 
 
 def test_chat_commands_and_eof_are_local_and_do_not_call_provider(monkeypatch, tmp_path):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     provider = FakeProvider([])
     output = StringIO()
     console = Console(file=output, force_terminal=False, color_system=None)
@@ -909,7 +908,7 @@ def test_diff_does_not_leak_a_parent_git_worktree(monkeypatch, tmp_path):
         calls.append((command, kwargs["cwd"]))
         return subprocess.CompletedProcess(command, 0, stdout=str(parent), stderr="")
 
-    monkeypatch.setattr("featurepilot.chat.subprocess.run", fake_run)
+    monkeypatch.setattr("featurepilot.chat.session.subprocess.run", fake_run)
 
     session._show_diff()
 
@@ -918,7 +917,7 @@ def test_diff_does_not_leak_a_parent_git_worktree(monkeypatch, tmp_path):
 
 
 def test_ctrl_c_cancels_only_current_turn_and_chat_continues(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     provider = FakeProvider([KeyboardInterrupt(), LLMResponse(content="second turn works")])
     output = StringIO()
     console = Console(file=output, force_terminal=False, color_system=None)
@@ -938,7 +937,7 @@ def test_ctrl_c_cancels_only_current_turn_and_chat_continues(tmp_path, monkeypat
 
 
 def test_profile_failure_warns_but_still_builds_chat(monkeypatch, tmp_path):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
 
     class BrokenProfiler:
         def profile(self, repository):

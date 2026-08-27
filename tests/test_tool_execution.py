@@ -7,19 +7,19 @@ import time
 
 import pytest
 
-from corecoder.agent import Agent
-from corecoder.events import CallbackEventSink, RuntimeEventType
-from corecoder.llm import LLMResponse, ToolCall
-from corecoder.runtime_control import CancellationToken
-from corecoder.tool_execution import (
+from featurepilot.chat.executor import RepositoryToolExecutor
+from featurepilot.engine.agent import Agent
+from featurepilot.engine.events import CallbackEventSink, RuntimeEventType
+from featurepilot.engine.llm import LLMResponse, ToolCall
+from featurepilot.engine.runtime_control import CancellationToken
+from featurepilot.engine.tool_execution import (
     ToolConcurrency,
     ToolEffect,
     ToolExecutionDescription,
     ToolExecutionPlan,
     resources_conflict,
 )
-from corecoder.tools.base import Tool
-from featurepilot.chat_executor import RepositoryToolExecutor
+from featurepilot.engine.tools.base import Tool
 
 
 class FakeLLM:

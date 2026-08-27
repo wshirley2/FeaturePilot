@@ -15,10 +15,10 @@ from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType,
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.utils import get_cwidth
 
-from corecoder.events import RuntimeEvent, RuntimeEventType
-from corecoder.permissions import PermissionDecision, PermissionEffect, PermissionRequest
-from featurepilot.sessions import SessionEvent, SessionStore
-from featurepilot.tui import FeaturePilotTui, _preserve_shift_enter
+from featurepilot.chat.tui import FeaturePilotTui, _preserve_shift_enter
+from featurepilot.engine.events import RuntimeEvent, RuntimeEventType
+from featurepilot.engine.permissions import PermissionDecision, PermissionEffect, PermissionRequest
+from featurepilot.runtime.sessions import SessionEvent, SessionStore
 
 
 def _runtime(tmp_path: Path, store: SessionStore, session_id: str):
@@ -170,7 +170,7 @@ def test_tui_uses_one_transcript_instead_of_side_panels(tmp_path, monkeypatch):
             self.layout = kwargs["layout"]
             self.options = kwargs
 
-    monkeypatch.setattr("featurepilot.tui.Application", FakeApplication)
+    monkeypatch.setattr("featurepilot.chat.tui.Application", FakeApplication)
     application = tui._build_application()
     children = application.layout.container.children
 
@@ -295,7 +295,7 @@ def test_tui_run_starts_with_the_welcome_panel_visible(tmp_path, monkeypatch):
         def run(self):
             return 0
 
-    monkeypatch.setattr("featurepilot.tui.Application", FakeApplication)
+    monkeypatch.setattr("featurepilot.chat.tui.Application", FakeApplication)
 
     assert tui.run() == 0
     assert tui._welcome_visible
@@ -385,7 +385,7 @@ def test_tui_shift_enter_inserts_a_newline_and_input_has_bottom_divider(tmp_path
             kwargs.pop("input").close()
             return PromptToolkitApplication(input=pipe_input, output=DummyOutput(), **kwargs)
 
-        monkeypatch.setattr("featurepilot.tui.Application", build_application)
+        monkeypatch.setattr("featurepilot.chat.tui.Application", build_application)
         application = tui._build_application()
         state: list[str] = []
 
@@ -409,7 +409,7 @@ def test_tui_shift_enter_inserts_a_newline_and_input_has_bottom_divider(tmp_path
                 tui.input.buffer.insert_text("second line")
                 state.append(tui.input.buffer.text)
 
-            monkeypatch.setattr("featurepilot.tui._physical_shift_is_pressed", lambda: True)
+            monkeypatch.setattr("featurepilot.chat.tui._physical_shift_is_pressed", lambda: True)
             tui.input.buffer.text = "first line"
             tui.input.buffer.cursor_position = len(tui.input.buffer.text)
             application.key_processor.feed(KeyPress(Keys.ControlM, "\r"))
@@ -557,7 +557,7 @@ def test_tui_renders_multiple_transcript_entries_without_cursor_overflow(tmp_pat
             kwargs.pop("input").close()
             return PromptToolkitApplication(input=pipe_input, output=DummyOutput(), **kwargs)
 
-        monkeypatch.setattr("featurepilot.tui.Application", build_application)
+        monkeypatch.setattr("featurepilot.chat.tui.Application", build_application)
         application = tui._build_application()
         application.run(pre_run=application.exit)
 
@@ -666,7 +666,7 @@ def test_tui_scroll_position_survives_rerender_while_not_following(tmp_path, mon
             kwargs.pop("input").close()
             return PromptToolkitApplication(input=pipe_input, output=DummyOutput(), **kwargs)
 
-        monkeypatch.setattr("featurepilot.tui.Application", build_application)
+        monkeypatch.setattr("featurepilot.chat.tui.Application", build_application)
         application = tui._build_application()
         state: dict[str, int] = {}
 

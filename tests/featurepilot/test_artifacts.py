@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from featurepilot.changes import ChangeService
+from featurepilot.advanced.changes import ChangeService
+from featurepilot.advanced.reporting import ReportService, RunMetrics
+from featurepilot.advanced.workspace import Workspace
 from featurepilot.domain import Plan, PlanRecord, Run, Task
 from featurepilot.execution import ValidationArtifact, ValidationCommandResult
-from featurepilot.reporting import ReportService, RunMetrics
-from featurepilot.workspace import Workspace
 
 
 def _record(source: Path) -> PlanRecord:

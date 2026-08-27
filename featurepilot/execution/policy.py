@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from corecoder.permissions import (
+from featurepilot.engine.permissions import (
     PermissionAction,
     PermissionDecision,
     PermissionEffect,

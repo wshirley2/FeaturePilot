@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..path_policy import DEFAULT_IGNORED_DIRECTORIES, should_ignore_repository_path
+from ..safety.paths import DEFAULT_IGNORED_DIRECTORIES, should_ignore_repository_path
 from .python_ast import PythonModule, parse_python_source
 
 

@@ -4,7 +4,7 @@ import os
 import sys
 from types import SimpleNamespace
 
-from corecoder.tools import ALL_TOOLS, get_tool
+from featurepilot.engine.tools import ALL_TOOLS, get_tool
 
 
 def test_tool_count():
@@ -64,7 +64,7 @@ def test_bash_blocks_rm_force_recursive_variants():
 
 def test_bash_allows_non_destructive_rm():
     """A plain or non-forced local rm should not be blocked."""
-    from corecoder.tools.bash import _check_dangerous
+    from featurepilot.engine.tools.bash import _check_dangerous
 
     assert _check_dangerous("rm -f notes.log") is None
     assert _check_dangerous("rm -r ./build_output") is None
@@ -92,7 +92,7 @@ def test_bash_blocks_pipe_to_sh():
 
 def test_bash_chained_cd_resolves_sequentially(tmp_path):
     """`cd a && cd b` must end in a/b, not resolve both against the start dir."""
-    import corecoder.tools.bash as bash_mod
+    import featurepilot.engine.tools.bash as bash_mod
 
     (tmp_path / "a" / "b").mkdir(parents=True)
     saved = getattr(bash_mod._local, "cwd", None)
@@ -108,7 +108,7 @@ def test_bash_cwd_is_thread_local(tmp_path):
     """Parallel bash calls must not race on a shared cwd: each thread tracks its own."""
     import threading
 
-    import corecoder.tools.bash as bash_mod
+    import featurepilot.engine.tools.bash as bash_mod
 
     (tmp_path / "ta").mkdir()
     (tmp_path / "tb").mkdir()
@@ -139,7 +139,7 @@ def test_bash_truncates_long_output():
 
 
 def test_bash_uses_the_local_command_output_encoding(monkeypatch, tmp_path):
-    import corecoder.tools.bash as bash_mod
+    import featurepilot.engine.tools.bash as bash_mod
 
     captured = {}
 

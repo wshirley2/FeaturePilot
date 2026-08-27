@@ -9,23 +9,23 @@ from pathlib import Path
 
 from rich.console import Console
 
-from corecoder.runtime_control import RuntimeLimits
+from featurepilot.engine.runtime_control import RuntimeLimits
 
 from . import __version__
-from .chat import ChatSession, TerminalEventSink
+from .advanced.managed import ManagedRunExecutionError, ManagedRunService
+from .advanced.plan_chat import PlanChatSession
+from .advanced.planning import PlanningService, PlanStore, PlanValidationError
+from .advanced.workspace import CopyWorkspaceBackend, WorkspaceService
+from .chat.permissions import TerminalPermissionPrompt
+from .chat.session import ChatSession, TerminalEventSink
+from .chat.tui import FeaturePilotTui, tui_supported
+from .config.user import load_user_config, run_setup_wizard
 from .domain import PlanRecord, Task
 from .domain.task import TASK_TYPES
-from .managed import ManagedRunExecutionError, ManagedRunService
-from .permissions import TerminalPermissionPrompt
-from .plan_chat import PlanChatSession
-from .planning import PlanningService, PlanStore, PlanValidationError
 from .repository import RepositoryProfiler
 from .runtime import RuntimeBootstrap, RuntimeBootstrapInput
-from .sessions import SessionStore
-from .trust import confirm_workspace_access
-from .tui import FeaturePilotTui, tui_supported
-from .user_config import load_user_config, run_setup_wizard
-from .workspace import CopyWorkspaceBackend, WorkspaceService
+from .runtime.sessions import SessionStore
+from .safety.trust import confirm_workspace_access
 
 _PLAN_COMMANDS = {"chat", "create", "list", "show", "approve", "reject", "regenerate"}
 _DEFAULT_STORE_DIR = Path(".featurepilot/plans")

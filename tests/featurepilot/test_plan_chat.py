@@ -8,13 +8,13 @@ from pathlib import Path
 
 from rich.console import Console
 
-from corecoder.llm import LLMResponse, ToolCall
-from featurepilot.chat import ChatSession, TerminalEventSink
-from featurepilot.managed import ManagedRunService
-from featurepilot.plan_chat import PlanChatSession
-from featurepilot.planning import PlanningService, PlanStore
+from featurepilot.advanced.managed import ManagedRunService
+from featurepilot.advanced.plan_chat import PlanChatSession
+from featurepilot.advanced.planning import PlanningService, PlanStore
+from featurepilot.advanced.workspace import CopyWorkspaceBackend, WorkspaceCreationError, WorkspaceService
+from featurepilot.chat.session import ChatSession, TerminalEventSink
+from featurepilot.engine.llm import LLMResponse, ToolCall
 from featurepilot.runtime import RuntimeBootstrap, RuntimeBootstrapInput
-from featurepilot.workspace import CopyWorkspaceBackend, WorkspaceCreationError, WorkspaceService
 
 
 class FakeProvider:
@@ -69,7 +69,7 @@ def _session(tmp_path: Path, repository: Path, provider: FakeProvider, inputs: l
 
 
 def test_plan_chat_requires_explicit_approval_then_runs_in_workspace(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     provider = FakeProvider([
         LLMResponse(tool_calls=[ToolCall(
@@ -107,7 +107,7 @@ def test_plan_chat_requires_explicit_approval_then_runs_in_workspace(tmp_path, m
 
 
 def test_plan_chat_natural_language_revision_creates_next_version(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     session, store, output = _session(
         tmp_path,
@@ -146,7 +146,7 @@ def test_plan_chat_shortcuts_keep_safe_non_execution_defaults(tmp_path):
 
 
 def test_chat_does_not_embed_plan_mode_or_create_a_workspace(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     output = StringIO()
     console = Console(file=output, force_terminal=False, color_system=None, width=120)
@@ -213,7 +213,7 @@ def test_workspace_creation_failure_stays_in_plan_mode_with_a_brief_retry_messag
 
 
 def test_plan_chat_reports_system_validation_failure_and_retains_workspace(tmp_path, monkeypatch):
-    monkeypatch.setenv("CORECODER_LOAD_DOTENV", "0")
+    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
     repository = _repository(tmp_path)
     (repository / "test_smoke.py").write_text("def test_smoke():\n    assert False\n", encoding="utf-8")
     session, _, output = _session(

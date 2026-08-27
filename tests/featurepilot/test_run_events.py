@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from corecoder.events import RuntimeEvent, RuntimeEventType
-from featurepilot.run_events import ManagedRunEventSink, RunEventLog
+from featurepilot.advanced.run_events import ManagedRunEventSink, RunEventLog
+from featurepilot.engine.events import RuntimeEvent, RuntimeEventType
 
 
 class RecordingSink:

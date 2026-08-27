@@ -7,7 +7,15 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
-from corecoder.permissions import (
+from featurepilot.chat.executor import RepositoryToolExecutor
+from featurepilot.chat.permissions import (
+    ChatPermissionPolicy,
+    TerminalPermissionPrompt,
+    command_effect,
+    command_prefix,
+    command_tokens,
+)
+from featurepilot.engine.permissions import (
     PermissionAction,
     PermissionDecision,
     PermissionEffect,
@@ -15,17 +23,9 @@ from corecoder.permissions import (
     PermissionManager,
     PermissionRequest,
 )
-from corecoder.tools.bash import BashTool
-from corecoder.tools.edit import EditFileTool
-from corecoder.tools.write import WriteFileTool
-from featurepilot.chat_executor import RepositoryToolExecutor
-from featurepilot.permissions import (
-    ChatPermissionPolicy,
-    TerminalPermissionPrompt,
-    command_effect,
-    command_prefix,
-    command_tokens,
-)
+from featurepilot.engine.tools.bash import BashTool
+from featurepilot.engine.tools.edit import EditFileTool
+from featurepilot.engine.tools.write import WriteFileTool
 
 
 class AskPolicy:

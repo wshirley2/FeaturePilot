@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..advanced.workspace import Workspace
 from ..domain import ExecutionScope, PlanRecord, Run
-from ..workspace import Workspace
 
 
 @dataclass(frozen=True, slots=True, init=False)

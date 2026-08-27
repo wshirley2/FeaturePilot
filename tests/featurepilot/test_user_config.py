@@ -1,7 +1,7 @@
 import json
 
 from featurepilot.cli import main
-from featurepilot.user_config import (
+from featurepilot.config.user import (
     UserConfig,
     load_user_config,
     resolve_runtime_config,
@@ -120,7 +120,7 @@ def test_runtime_configuration_priority_is_cli_then_environment_then_user_then_d
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("FEATUREPILOT_MODEL", raising=False)
-    monkeypatch.delenv("CORECODER_LOAD_DOTENV", raising=False)
+    monkeypatch.delenv("FEATUREPILOT_LOAD_DOTENV", raising=False)
 
     user = resolve_runtime_config()
     assert (user.api_key, user.base_url, user.model, user.provider) == (
@@ -152,7 +152,7 @@ def test_invalid_user_configuration_is_not_treated_as_complete(tmp_path, monkeyp
 def test_setup_wizard_saves_all_fields_without_echoing_api_key(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("FEATUREPILOT_CONFIG_DIR", str(tmp_path / "user-config"))
     answers = iter(["litellm", "https://provider.example/v1", "provider-model"])
-    monkeypatch.setattr("featurepilot.user_config.getpass", lambda _prompt: "hidden-api-key")
+    monkeypatch.setattr("featurepilot.config.user.getpass", lambda _prompt: "hidden-api-key")
 
     config = run_setup_wizard(input_fn=lambda _prompt: next(answers))
 

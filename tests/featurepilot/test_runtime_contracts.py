@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from featurepilot.runtime_contracts import (
+from featurepilot.runtime.contracts import (
     RuntimeMode,
     RuntimeResultScope,
     RuntimeResultStatus,

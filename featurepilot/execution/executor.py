@@ -1,12 +1,12 @@
-"""Bridge CoreCoder's Tool protocol to FeaturePilot's Plan-aware policy."""
+"""Bridge FeaturePilot's Tool protocol to its Plan-aware policy."""
 
 from __future__ import annotations
 
 import threading
 from typing import Any
 
-from corecoder.tools import get_tool
-from corecoder.tools.base import Tool
+from featurepilot.engine.tools import get_tool
+from featurepilot.engine.tools.base import Tool
 
 from .context import ExecutionContext
 from .policy import ToolEffect, ToolPolicy
@@ -17,19 +17,19 @@ _FEATUREPILOT_TOOL_NAMES = ("read_file", "glob", "grep", "edit_file", "write_fil
 
 
 def build_featurepilot_tools() -> list[Tool]:
-    """Return the deliberately small CoreCoder Tool set allowed for a FeaturePilot Run."""
+    """Return the deliberately small Tool set allowed for a FeaturePilot Run."""
 
     tools: list[Tool] = []
     for name in _FEATUREPILOT_TOOL_NAMES:
         tool = get_tool(name)
         if tool is None:
-            raise RuntimeError(f"CoreCoder tool registry is missing required tool {name!r}")
+            raise RuntimeError(f"FeaturePilot tool registry is missing required tool {name!r}")
         tools.append(tool)
     return tools
 
 
 class WorkspaceToolExecutor:
-    """Apply policy before running a CoreCoder Tool inside one Workspace."""
+    """Apply policy before running a Tool inside one Workspace."""
 
     def __init__(
         self,

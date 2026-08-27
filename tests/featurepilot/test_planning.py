@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from featurepilot.advanced.planning import PlanGenerator, PlanStore, PlanValidator
 from featurepilot.domain import Plan, Task
-from featurepilot.planning import PlanGenerator, PlanStore, PlanValidator
 from featurepilot.repository import ContextSelector, RepositoryIndex, RepositoryProfiler
 
 BENCHMARK_ROOT = Path(__file__).parents[2] / "benchmarks" / "cli_data_tool"
