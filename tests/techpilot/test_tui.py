@@ -12,7 +12,7 @@ from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.key_binding.key_processor import KeyPress
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType, MouseModifier
-from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.output import ColorDepth, DummyOutput
 from prompt_toolkit.utils import get_cwidth
 
 from techpilot.chat.tui import TechPilotTui, _preserve_shift_enter
@@ -180,6 +180,7 @@ def test_tui_uses_one_transcript_instead_of_side_panels(tmp_path, monkeypatch):
     assert tui.input.window in children
     assert application.options["full_screen"] is False
     assert application.options["erase_when_done"] is False
+    assert application.options["color_depth"] is ColorDepth.DEPTH_24_BIT
 
 
 def test_tui_clicking_a_tool_arrow_toggles_its_saved_output(tmp_path):
