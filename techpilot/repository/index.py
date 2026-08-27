@@ -1,5 +1,6 @@
 """File inventory and lightweight symbol index."""
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,21 +25,35 @@ class RepositoryIndex:
         ignored = DEFAULT_IGNORED_DIRECTORIES if ignored_directories is None else ignored_directories
         index = cls(root=repository_root)
 
-        for path in sorted(repository_root.rglob("*")):
-            relative_path = path.relative_to(repository_root)
-            if should_ignore_repository_path(relative_path, ignored_directories=ignored):
-                continue
-            if not path.is_file():
-                continue
-            normalized_path = relative_path.as_posix()
-            index.files.append(normalized_path)
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            index.file_texts[normalized_path] = text
-            if path.suffix == ".py":
-                index.python_modules[normalized_path] = parse_python_source(text, normalized_path)
+        # ``Path.rglob`` recursively enters every directory before a caller
+        # can filter the resulting path.  That makes a normal Chat launch
+        # inspect virtualenvs and retained test artifacts even though they are
+        # later excluded from the profile.  Prune ``os.walk`` in-place so the
+        # ignored directories are never enumerated.
+        for directory, child_directories, child_files in os.walk(repository_root, topdown=True):
+            directory_path = Path(directory)
+            relative_directory = directory_path.relative_to(repository_root)
+            child_directories[:] = [
+                name
+                for name in sorted(child_directories)
+                if not should_ignore_repository_path(relative_directory / name, ignored_directories=ignored)
+            ]
+            for name in sorted(child_files):
+                relative_path = relative_directory / name
+                if should_ignore_repository_path(relative_path, ignored_directories=ignored):
+                    continue
+                path = directory_path / name
+                if not path.is_file():
+                    continue
+                normalized_path = relative_path.as_posix()
+                index.files.append(normalized_path)
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                index.file_texts[normalized_path] = text
+                if path.suffix == ".py":
+                    index.python_modules[normalized_path] = parse_python_source(text, normalized_path)
         return index
 
     def to_dict(self) -> dict[str, object]:

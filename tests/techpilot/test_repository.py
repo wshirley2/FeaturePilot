@@ -54,7 +54,7 @@ def test_repository_index_ignores_runtime_artifacts_and_local_secrets(tmp_path):
     (tmp_path / ".env").write_text("API_KEY=secret\n", encoding="utf-8")
     (tmp_path / ".env.local").write_text("TOKEN=secret\n", encoding="utf-8")
     (tmp_path / ".env.example").write_text("API_KEY=\n", encoding="utf-8")
-    for directory in (".tmp", "tmp", "runs", ".techpilot"):
+    for directory in (".tmp", "tmp", "runs", ".techpilot", ".venv", "pytest-audit-temp"):
         artifact = tmp_path / directory / "copied.py"
         artifact.parent.mkdir()
         artifact.write_text("SECRET = True\n", encoding="utf-8")
@@ -66,3 +66,25 @@ def test_repository_index_ignores_runtime_artifacts_and_local_secrets(tmp_path):
     assert ".env" not in index.files
     assert ".env.local" not in index.files
     assert not any(path.endswith("copied.py") for path in index.files)
+
+
+def test_repository_index_prunes_ignored_directories_before_descending(tmp_path, monkeypatch):
+    (tmp_path / "src" / "main.py").parent.mkdir()
+    (tmp_path / "src" / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    ignored = tmp_path / ".venv" / "site-packages"
+    ignored.mkdir(parents=True)
+    (ignored / "large_generated.py").write_text("VALUE = 2\n", encoding="utf-8")
+    seen_directories: list[Path] = []
+    original_walk = __import__("os").walk
+
+    def observing_walk(*args, **kwargs):
+        for directory, child_directories, child_files in original_walk(*args, **kwargs):
+            seen_directories.append(Path(directory))
+            yield directory, child_directories, child_files
+
+    monkeypatch.setattr("techpilot.repository.index.os.walk", observing_walk)
+
+    index = RepositoryIndex.build(tmp_path)
+
+    assert index.files == ["src/main.py"]
+    assert ignored not in seen_directories

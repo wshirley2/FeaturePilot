@@ -10,6 +10,8 @@ DEFAULT_IGNORED_DIRECTORIES = frozenset({
     ".git",
     ".mypy_cache",
     ".pytest_cache",
+    "pytest-audit-temp",
+    "pytest-audit-temp-core",
     ".ruff_cache",
     ".tmp",
     ".venv",
