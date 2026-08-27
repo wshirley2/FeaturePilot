@@ -140,7 +140,12 @@ def test_multiple_reads_overlap_and_beat_a_serial_baseline():
     elapsed = time.monotonic() - started
 
     assert timeline.max_active == 2
-    assert elapsed < delay * len(calls)  # Concurrent calls beat the equivalent serial tool work.
+    tool_starts = {name: timestamp for kind, name, timestamp in timeline.records if kind == "start"}
+    tool_ends = {name: timestamp for kind, name, timestamp in timeline.records if kind == "end"}
+    tool_elapsed = max(tool_ends.values()) - min(tool_starts.values())
+    serial_baseline = sum(tool_ends[name] - tool_starts[name] for name in tool_starts)
+    assert tool_elapsed < serial_baseline  # Concurrent tool work beats the equivalent serial baseline.
+    assert elapsed >= tool_elapsed  # The assertion excludes unrelated Agent/Provider overhead.
 
 
 def test_execution_plan_uses_safe_read_waves_and_conservative_resource_conflicts():
