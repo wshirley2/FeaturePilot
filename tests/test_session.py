@@ -1,5 +1,5 @@
-from featurepilot.engine import session as session_module
-from featurepilot.engine.session import load_session, save_session
+from techpilot.engine import session as session_module
+from techpilot.engine.session import load_session, save_session
 
 
 def test_default_session_ids_do_not_collide(tmp_path, monkeypatch):

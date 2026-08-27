@@ -1,6 +1,6 @@
 # CLI Data Tool
 
-一个用于 FeaturePilot 评测的最小 Python CLI 项目。
+一个用于 TechPilot 评测的最小 Python CLI 项目。
 
 ## 当前功能
 

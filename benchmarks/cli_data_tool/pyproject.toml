@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cli-data-tool"
 version = "0.1.0"
-description = "A tiny CLI used as a FeaturePilot benchmark repository."
+description = "A tiny CLI used as a TechPilot benchmark repository."
 requires-python = ">=3.10"
 dependencies = []
 

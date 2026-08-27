@@ -1,14 +1,14 @@
 """Tests for core modules: config, context, session, imports."""
 
-from featurepilot.engine import ALL_TOOLS, LLM, Agent, Config, __version__
-from featurepilot.engine import session as session_module
-from featurepilot.engine.context import ContextManager, estimate_tokens
-from featurepilot.engine.session import list_sessions, load_session, save_session
-from featurepilot.engine.tools import get_tool
+from techpilot.engine import ALL_TOOLS, LLM, Agent, Config, __version__
+from techpilot.engine import session as session_module
+from techpilot.engine.context import ContextManager, estimate_tokens
+from techpilot.engine.session import list_sessions, load_session, save_session
+from techpilot.engine.tools import get_tool
 
 
 def test_system_prompt_prefers_native_read_tools_and_simple_shell_calls():
-    from featurepilot.engine.prompt import system_prompt
+    from techpilot.engine.prompt import system_prompt
 
     prompt = system_prompt([])
 
@@ -31,16 +31,16 @@ def test_public_api_exports():
 
 
 def test_config_from_env(monkeypatch):
-    monkeypatch.setenv("FEATUREPILOT_MODEL", "test-model")
+    monkeypatch.setenv("TECHPILOT_MODEL", "test-model")
     c = Config.from_env()
     assert c.model == "test-model"
 
 
 def test_config_defaults(monkeypatch):
     # clear relevant env vars without leaking the change into other tests
-    monkeypatch.delenv("FEATUREPILOT_MODEL", raising=False)
-    monkeypatch.delenv("FEATUREPILOT_MAX_TOKENS", raising=False)
-    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
+    monkeypatch.delenv("TECHPILOT_MODEL", raising=False)
+    monkeypatch.delenv("TECHPILOT_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("TECHPILOT_LOAD_DOTENV", "0")
 
     c = Config.from_env()
     assert c.model == "gpt-5.5"
@@ -49,12 +49,12 @@ def test_config_defaults(monkeypatch):
 
 
 def test_config_uses_model_context_default_and_explicit_override(monkeypatch):
-    monkeypatch.setenv("FEATUREPILOT_LOAD_DOTENV", "0")
-    monkeypatch.setenv("FEATUREPILOT_MODEL", "deepseek-v4-pro")
-    monkeypatch.delenv("FEATUREPILOT_MAX_CONTEXT", raising=False)
+    monkeypatch.setenv("TECHPILOT_LOAD_DOTENV", "0")
+    monkeypatch.setenv("TECHPILOT_MODEL", "deepseek-v4-pro")
+    monkeypatch.delenv("TECHPILOT_MAX_CONTEXT", raising=False)
     assert Config.from_env().max_context_tokens == 1_000_000
 
-    monkeypatch.setenv("FEATUREPILOT_MAX_CONTEXT", "64000")
+    monkeypatch.setenv("TECHPILOT_MAX_CONTEXT", "64000")
     assert Config.from_env().max_context_tokens == 64000
 
 
@@ -154,7 +154,7 @@ def test_list_sessions():
 # --- Cost estimation ---
 
 def test_cost_estimation_known_model():
-    from featurepilot.engine.llm import LLM
+    from techpilot.engine.llm import LLM
     llm = LLM.__new__(LLM)
     llm.model = "gpt-5.4"
     llm.total_prompt_tokens = 1_000_000
@@ -165,7 +165,7 @@ def test_cost_estimation_known_model():
 
 
 def test_cost_estimation_deepseek_v4_model():
-    from featurepilot.engine.llm import LLM
+    from techpilot.engine.llm import LLM
 
     llm = LLM.__new__(LLM)
     llm.model = "deepseek-v4-pro"
@@ -174,7 +174,7 @@ def test_cost_estimation_deepseek_v4_model():
     assert llm.estimated_cost == 0.435 + 0.87
 
 def test_cost_estimation_unknown_model():
-    from featurepilot.engine.llm import LLM
+    from techpilot.engine.llm import LLM
     llm = LLM.__new__(LLM)
     llm.model = "some-custom-model"
     llm.total_prompt_tokens = 1000
@@ -185,7 +185,7 @@ def test_cost_estimation_unknown_model():
 # --- Changed files tracking ---
 
 def test_edit_tracks_changed_files(tmp_path):
-    from featurepilot.engine.tools.edit import _changed_files
+    from techpilot.engine.tools.edit import _changed_files
     _changed_files.clear()
     edit = get_tool("edit_file")
     path = tmp_path / "sample.py"
@@ -196,7 +196,7 @@ def test_edit_tracks_changed_files(tmp_path):
 
 
 def test_write_tracks_changed_files(tmp_path):
-    from featurepilot.engine.tools.edit import _changed_files
+    from techpilot.engine.tools.edit import _changed_files
     _changed_files.clear()
     write = get_tool("write_file")
     path = tmp_path / "tracked.txt"
@@ -223,7 +223,7 @@ def test_agent_tool_scope_is_per_instance():
 
 def test_exec_tool_distinguishes_bad_args_from_internal_error():
     """A TypeError raised inside a tool must not be reported as bad arguments."""
-    from featurepilot.engine.tools.base import Tool
+    from techpilot.engine.tools.base import Tool
 
     class _Boom(Tool):
         name = "boom"
@@ -248,7 +248,7 @@ def test_exec_tool_distinguishes_bad_args_from_internal_error():
 
 def test_optional_tool_executor_intercepts_validated_tool_calls():
     """Applications can add policy without changing normal Tool execution."""
-    from featurepilot.engine.tools.base import Tool
+    from techpilot.engine.tools.base import Tool
 
     class _Echo(Tool):
         name = "echo"
@@ -278,7 +278,7 @@ def test_optional_tool_executor_intercepts_validated_tool_calls():
 
 def test_agent_without_executor_keeps_direct_tool_execution():
     """The optional extension point must not change the runtime's default path."""
-    from featurepilot.engine.tools.base import Tool
+    from techpilot.engine.tools.base import Tool
 
     class _Echo(Tool):
         name = "echo"

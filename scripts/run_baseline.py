@@ -1,4 +1,4 @@
-"""Run the deterministic FeaturePilot E2-lite benchmark suite."""
+"""Run the deterministic TechPilot E2-lite benchmark suite."""
 
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "benchmarks" / "baseline_cases.json"
-DEFAULT_WORK_DIR = ROOT / ".featurepilot" / "e2-lite"
+DEFAULT_WORK_DIR = ROOT / ".techpilot" / "e2-lite"
 DEFAULT_OUTPUT = DEFAULT_WORK_DIR / "latest.json"
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run FeaturePilot's deterministic E2-lite baseline.")
+    parser = argparse.ArgumentParser(description="Run TechPilot's deterministic E2-lite baseline.")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help="Baseline case manifest.")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="JSON result path.")
     parser.add_argument(
@@ -136,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     payload = {
         "schema_version": 1,
-        "suite": "FeaturePilot E2-lite deterministic baseline",
+        "suite": "TechPilot E2-lite deterministic baseline",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "python": sys.version.split()[0],
         "platform": platform.platform(),

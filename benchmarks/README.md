@@ -1,6 +1,6 @@
-# FeaturePilot 基测
+# TechPilot 基测
 
-这里保存的是 FeaturePilot 的最小、可重复运行的产品基测（E2-lite）。它不调用真实模型，
+这里保存的是 TechPilot 的最小、可重复运行的产品基测（E2-lite）。它不调用真实模型，
 而是使用 Fake Provider 固定工具调用路径，避免模型波动、网络和费用影响结果。
 
 运行：
@@ -9,7 +9,7 @@
 python scripts/run_baseline.py
 ```
 
-结果默认写入 `.featurepilot/e2-lite/latest.json`，其中包含每个场景的通过状态、执行耗时、测试节点和
+结果默认写入 `.techpilot/e2-lite/latest.json`，其中包含每个场景的通过状态、执行耗时、测试节点和
 输出摘要。可用 `--list` 查看场景，或用 `--case <id>` 单独运行一个场景。
 
 ## 当前场景

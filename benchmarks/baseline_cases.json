@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "suite": "FeaturePilot E2-lite deterministic baseline",
+  "suite": "TechPilot E2-lite deterministic baseline",
   "repository_fixture": "benchmarks/cli_data_tool",
   "cases": [
     {
@@ -8,7 +8,7 @@
       "title": "Chat 只读分析",
       "mode": "chat",
       "category": "chat",
-      "test": "tests/featurepilot/test_chat.py::test_chat_read_only_inspects_benchmark_without_modifying_files",
+      "test": "tests/techpilot/test_chat.py::test_chat_read_only_inspects_benchmark_without_modifying_files",
       "expected": {
         "source_repository": "unchanged",
         "permission_prompt": "not_required",
@@ -20,7 +20,7 @@
       "title": "Chat 批准修改并验证",
       "mode": "chat",
       "category": "permission",
-      "test": "tests/featurepilot/test_chat.py::test_chat_end_to_end_reads_edits_validates_and_continues_without_network",
+      "test": "tests/techpilot/test_chat.py::test_chat_end_to_end_reads_edits_validates_and_continues_without_network",
       "expected": {
         "source_repository": "modified_after_approval",
         "validation": "passed",
@@ -32,7 +32,7 @@
       "title": "Chat 拒绝写入",
       "mode": "chat",
       "category": "permission",
-      "test": "tests/featurepilot/test_chat.py::test_rejected_write_stops_the_current_turn_without_retrying_tools",
+      "test": "tests/techpilot/test_chat.py::test_rejected_write_stops_the_current_turn_without_retrying_tools",
       "expected": {
         "source_repository": "unchanged",
         "permission_prompt": "denied",
@@ -44,7 +44,7 @@
       "title": "Managed Run 审批、隔离执行与产物保留",
       "mode": "managed_run",
       "category": "managed_run",
-      "test": "tests/featurepilot/test_plan_chat.py::test_plan_chat_requires_explicit_approval_then_runs_in_workspace",
+      "test": "tests/techpilot/test_plan_chat.py::test_plan_chat_requires_explicit_approval_then_runs_in_workspace",
       "expected": {
         "source_repository": "unchanged",
         "workspace": "created",

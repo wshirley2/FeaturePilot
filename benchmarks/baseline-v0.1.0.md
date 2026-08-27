@@ -1,4 +1,4 @@
-# FeaturePilot E2-lite 基线 v0.1.0
+# TechPilot E2-lite 基线 v0.1.0
 
 记录时间：2026-08-22  
 环境：Windows 11、Python 3.12.5、Fake Provider（无网络、无真实模型费用）

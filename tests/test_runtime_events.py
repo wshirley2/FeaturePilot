@@ -6,10 +6,10 @@ import json
 
 import pytest
 
-from featurepilot.engine.agent import Agent
-from featurepilot.engine.events import CallbackEventSink, RuntimeEvent, RuntimeEventType
-from featurepilot.engine.llm import LLMResponse, ToolCall
-from featurepilot.engine.tools.base import Tool
+from techpilot.engine.agent import Agent
+from techpilot.engine.events import CallbackEventSink, RuntimeEvent, RuntimeEventType
+from techpilot.engine.llm import LLMResponse, ToolCall
+from techpilot.engine.tools.base import Tool
 
 
 class EchoTool(Tool):

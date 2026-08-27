@@ -1,3 +1,3 @@
-"""Small CLI benchmark project for FeaturePilot."""
+"""Small CLI benchmark project for TechPilot."""
 
 __version__ = "0.1.0"
