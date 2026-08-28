@@ -61,6 +61,7 @@ def test_learning_command_starts_from_one_explicit_topic_and_supports_review(tmp
 
     assert started is not None
     assert "已创建学习路径：Python async" in started
+    assert "/learn" not in started
     assert "当前学习路径：Python async" in controller.handle("")
     assert "查看学习路径：Python async" in controller.handle("review")
     assert "查看学习路径：Python async" in controller.start_from_message("I want to review what I learned before.")
@@ -154,3 +155,29 @@ def test_tui_learning_choice_uses_highlighted_index_for_keyboard_selection(tmp_p
     tui._choose_learning_option(1)
     assert "已选择：暂停后开始" in tui.transcript_text
     assert "已切换学习路径。" in tui.transcript_text
+
+
+def test_tui_renders_learning_progress_before_starting_first_step(tmp_path, monkeypatch):
+    monkeypatch.setenv("TECHPILOT_CONFIG_DIR", str(tmp_path / "config"))
+    runtime = SimpleNamespace(
+        session_sink=None,
+        agent=SimpleNamespace(session_id="tui-stage", llm=object()),
+        config=SimpleNamespace(model="fake-model"),
+    )
+    tui = TechPilotTui()
+    tui.bind_runtime(runtime)
+    started: list[tuple[str, str]] = []
+    tui._start_runtime_turn = lambda text, *, status="正在思考…": started.append((text, status))
+
+    tui._apply_learning_turn(
+        "我想学 Python 异步",
+        LearningTurn(
+            user_input="我想学 Python 异步",
+            notice="已创建学习路径：Python 异步\n学习阶段：路径已创建，正在准备第一步。",
+            stage="正在准备第 1 步…",
+        ),
+    )
+
+    assert "学习进度" in tui.transcript_text
+    assert "正在准备第一步" in tui.transcript_text
+    assert started == [("我想学 Python 异步", "正在准备第 1 步…")]

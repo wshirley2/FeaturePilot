@@ -93,6 +93,26 @@ def test_model_router_fails_closed_to_plain_chat_on_low_confidence(tmp_path):
     assert LearningIntentRouter(service).route(runtime, "我最近想系统了解异步") == LearningRoute("chat")
 
 
+def test_start_route_exposes_progress_and_first_step_before_model_turn(tmp_path):
+    service = LearningService(LearningStore(tmp_path / "learning"))
+    runtime = FakeRuntime()
+    controller = LearningConversationController(
+        service,
+        router=FixedRouter(LearningRoute("start", "Python 异步", 0.96)),
+    )
+
+    turn = controller.prepare(runtime, "我想学 Python 异步")
+
+    assert turn.user_input == "我想学 Python 异步"
+    assert turn.should_run_model
+    assert turn.stage == "正在准备第 1 步…"
+    assert turn.notice is not None
+    assert "路径已创建" in turn.notice
+    assert "学习范围" in turn.notice
+    assert "Skill 已准备好" in turn.notice
+    assert "当前第 1 步：梳理 Python 异步" in runtime.activated[0][1]
+
+
 def test_starting_a_different_path_requires_a_choice_and_pause_then_start_is_safe(tmp_path):
     service = LearningService(LearningStore(tmp_path / "learning"))
     active = service.confirm(service.draft_from_command("Agent"), baseline_notes=None).goal

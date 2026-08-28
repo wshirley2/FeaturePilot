@@ -1,7 +1,6 @@
 """Learning-domain contracts, local persistence, and approved Skill discovery."""
 
 from .commands import LearningCommandController
-from .conversation import LearningChoice, LearningConversationController, LearningIntentRouter, LearningRoute, LearningTurn
 from .contracts import (
     DocumentRecord,
     ExtractedText,
@@ -20,6 +19,7 @@ from .contracts import (
     SourceRecord,
     TrendBrief,
 )
+from .conversation import LearningChoice, LearningConversationController, LearningIntentRouter, LearningRoute, LearningTurn
 from .registry import DEVELOPER_LEARNING_COACH, RoleRegistry, SkillPackage, SkillRegistry
 from .role_runtime import LearningRoleRuntime
 from .service import ConfirmedLearningGoal, LearningGoalDraft, LearningService
@@ -32,21 +32,21 @@ __all__ = [
     "ExtractedText",
     "KnowledgeDraft",
     "KnowledgeSync",
-    "LearningCommandController",
     "LearningChoice",
+    "LearningCommandController",
     "LearningConversationController",
     "LearningGoal",
     "LearningGoalDraft",
+    "LearningIntentRouter",
     "LearningPlan",
     "LearningProfile",
     "LearningRoleRuntime",
-    "LearningIntentRouter",
     "LearningRoute",
-    "LearningTurn",
     "LearningService",
     "LearningStep",
     "LearningStore",
     "LearningTask",
+    "LearningTurn",
     "QuizAttempt",
     "RoleDefinition",
     "RoleRegistry",

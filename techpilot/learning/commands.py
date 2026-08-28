@@ -51,7 +51,7 @@ class LearningCommandController:
                 goal = self.service.cancel_active_goal(session_sink=self.session_sink, session_id=self.session_id)
             except ValueError as error:
                 return f"学习：{error}。"
-            return f"已结束学习目标：{goal.topic}。已保存的计划仍可通过 /learn review 查看。"
+            return f"已结束学习目标：{goal.topic}。已保存的学习记录仍然可以直接复习。"
         if value.casefold() == "continue":
             return self._continue_message()
         if value.casefold() == "review":
@@ -79,7 +79,7 @@ class LearningCommandController:
             if active is not None:
                 return "\n".join([
                     f"你当前有一条正在进行的学习路径：{active.topic}。",
-                    "输入 /learn continue 继续，/learn review 查看，或先用 /learn stop 结束它再开始新主题。",
+                    "你可以直接说“继续之前的学习”或“帮我复习之前学过的内容”；如果要结束当前路径，请明确告诉我。",
                 ])
             return f"学习：{error}。"
         steps = "\n".join(f"  {index}. {step.title}" for index, step in enumerate(result.plan.steps, start=1))
@@ -88,7 +88,7 @@ class LearningCommandController:
             "我先按每周约两小时、建立实用基础来安排；之后只有会影响计划时，才需要补充你的目标和时间。",
             "起步计划：",
             steps,
-            "准备继续时输入 /learn continue；想重新查看计划可输入 /learn review。",
+            "接下来我会直接带你开始第 1 步，不需要再输入命令。",
         ])
 
     def _status_message(self) -> str:
@@ -97,24 +97,24 @@ class LearningCommandController:
         except ValueError as error:
             return f"学习：{error}。"
         if goal is None:
-            return "目前没有正在进行的学习目标。可用 /learn <主题> 开始，或用 /learn review 查看上一次保存的路径。"
+            return "目前没有正在进行的学习目标。想开始时直接告诉我你想学习什么。"
         return "\n".join([
             f"当前学习目标：{goal.topic}",
             f"状态：{_goal_status_text(goal.status)}",
             f"预期成果：{goal.intended_outcome or '未设置'}",
-            "输入 /learn continue 继续，/learn review 查看，或先用 /learn stop 结束它再开始新主题。",
+            "你可以直接说“继续之前的学习”或“帮我复习之前学过的内容”。",
         ])
 
     def _continue_message(self) -> str:
         goal = self.service.continue_goal()
         if goal is None:
-            return "没有可继续的学习路径。已结束的路径可用 /learn review 查看；想学习新主题时直接告诉我即可。"
+            return "没有可继续的学习路径。想学习新主题时直接告诉我即可。"
         return self._plan_message(goal, "继续学习")
 
     def _review_message(self) -> str:
         goal = self.service.review_goal()
         if goal is None:
-            return "还没有可复习的学习路径。可用 /learn <主题> 开始一条新的路径。"
+            return "还没有可复习的学习路径。想开始时直接告诉我你想学习什么。"
         return self._plan_message(goal, "查看学习路径")
 
     def _plan_message(self, goal, heading: str) -> str:
@@ -129,16 +129,16 @@ class LearningCommandController:
             f"{heading}：{goal.topic}",
             f"目标：{goal.intended_outcome}",
             steps,
-            "资料研究、来源整理、互动教学和测验将在后续阶段接入。",
+            "想继续时直接告诉我“继续之前的学习”；想换个主题时直接说出新的学习目标。",
         ])
 
     def _landing_message(self) -> str:
         goal = self.service.active_goal()
         if goal is None:
-            return "目前没有正在进行的学习路径。想开始时输入 /learn <主题>；/learn review 可查看上一次保存的路径。"
+            return "目前没有正在进行的学习路径。想开始时直接告诉我你想学习什么。"
         return "\n".join([
             f"当前学习路径：{goal.topic}",
-            "输入 /learn continue 继续，/learn review 查看，/learn stop 结束。",
+            "你可以直接说“继续之前的学习”或“帮我复习之前学过的内容”。",
         ])
 
 

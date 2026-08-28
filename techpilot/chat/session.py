@@ -323,8 +323,9 @@ class ChatSession:
             self.console.print(Panel(f"{turn.choice.title}\n\n{options}\n\n请输入 1、2 或 3 选择。", title="学习选择", border_style="yellow"))
             return None
         if turn.notice is not None:
-            self.console.print(Panel(turn.notice, title="学习", border_style="green"))
-            return None
+            self.console.print(Panel(turn.notice, title="学习进度", border_style="green"))
+        if turn.stage is not None:
+            self.console.print(f"[dim]{turn.stage}[/dim]")
         return turn.user_input
 
     def _read_input(self, prompt: str) -> str:

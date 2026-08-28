@@ -551,19 +551,21 @@ class TechPilotTui:
         self._start_runtime_turn(text)
         return True
 
-    def _start_runtime_turn(self, text: str) -> None:
+    def _start_runtime_turn(self, text: str, *, status: str = "正在思考…") -> None:
         self._follow_tail = True
         self._running = True
         self._streamed_turn = False
         self._stream_entry = None
         self._stream_buffer = ""
-        self._status = "Starting turn…"
+        self._status = status
         self._refresh_status()
         threading.Thread(target=self._run_turn, args=(text,), daemon=True).start()
 
     def _prepare_learning_turn(self, text: str) -> None:
         assert self.runtime is not None
         assert self.learning_conversation is not None
+        self._updates.put(("learning_stage", "✻ 正在准备 Skill…"))
+        self._invalidate()
         try:
             turn = self.learning_conversation.prepare(self.runtime, text)
         except Exception as error:
@@ -584,14 +586,16 @@ class TechPilotTui:
         if turn.notice is not None:
             if not user_already_visible:
                 self._append_transcript("you", text, kind="user")
-            self._append_transcript("学习", turn.notice, kind="system")
-            self._status = "Ready"
-            self._refresh_status()
-            return
+            self._append_transcript("学习进度", turn.notice, kind="system")
+        if turn.stage is not None:
+            self._status = turn.stage
         if turn.user_input is not None:
             if user_already_visible and turn.user_input == text:
                 self._suppressed_user_echo = text
-            self._start_runtime_turn(turn.user_input)
+            self._start_runtime_turn(turn.user_input, status=turn.stage or "正在思考…")
+            return
+        self._status = "Ready"
+        self._refresh_status()
 
     def _move_learning_choice(self, direction: int) -> None:
         pending = self._pending_learning_choice
@@ -709,6 +713,9 @@ class TechPilotTui:
                 text, turn = value  # type: ignore[misc]
                 self._learning_routing = False
                 self._apply_learning_turn(str(text), turn)  # type: ignore[arg-type]
+            elif kind == "learning_stage":
+                self._status = str(value)
+                self._refresh_status()
             elif kind == "turn_finished":
                 self._running = False
                 self._refresh_status()

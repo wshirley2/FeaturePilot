@@ -37,10 +37,11 @@ class LearningTurn:
     user_input: str | None = None
     choice: LearningChoice | None = None
     notice: str | None = None
+    stage: str | None = None
 
     @property
     def should_run_model(self) -> bool:
-        return self.user_input is not None and self.choice is None and self.notice is None
+        return self.user_input is not None and self.choice is None
 
 
 class LearningIntentRouter:
@@ -132,26 +133,33 @@ class LearningConversationController:
             runtime.clear_role()
             return LearningTurn(user_input=message)
         if route.intent == "introduce":
-            self.role_runtime.activate(runtime, active)
-            return LearningTurn(user_input=message)
+            activation = self.role_runtime.activate(runtime, active, self.service.plan_for(active) if active is not None else None)
+            return LearningTurn(user_input=message, notice=activation, stage="正在进入学习模式…")
         if route.intent in {"continue", "review"}:
             goal = self.service.continue_goal() if route.intent == "continue" else self.service.review_goal()
-            self.role_runtime.activate(runtime, goal)
-            return LearningTurn(user_input=message)
+            activation = self.role_runtime.activate(runtime, goal, self.service.plan_for(goal) if goal is not None else None)
+            stage = "正在恢复学习路径…" if route.intent == "continue" else "正在准备复习内容…"
+            return LearningTurn(user_input=message, notice=activation, stage=stage)
         if route.intent == "start":
             draft = self._draft(route.topic)
             if draft is None:
-                self.role_runtime.activate(runtime, active)
-                return LearningTurn(user_input=message)
+                activation = self.role_runtime.activate(runtime, active, self.service.plan_for(active) if active is not None else None)
+                return LearningTurn(user_input=message, notice=activation, stage="正在进入学习模式…")
             if active is not None and _same_topic(active.topic, draft.topic):
-                self.role_runtime.activate(runtime, active)
-                return LearningTurn(user_input=message)
+                activation = self.role_runtime.activate(runtime, active, self.service.plan_for(active))
+                return LearningTurn(user_input=message, notice=activation, stage="正在继续当前学习路径…")
             if active is not None:
                 self._pending = (active.topic, draft, message)
                 return LearningTurn(choice=self.pending_choice)
             self._confirm(draft, runtime)
-            self.role_runtime.activate(runtime, self.service.active_goal())
-            return LearningTurn(user_input=message)
+            goal = self.service.active_goal()
+            plan = self.service.plan_for(goal) if goal is not None else None
+            activation = self.role_runtime.activate(runtime, goal, plan)
+            return LearningTurn(
+                user_input=message,
+                notice=f"{activation}\n\n{_start_notice(goal, plan)}",
+                stage="正在准备第 1 步…",
+            )
         runtime.clear_role()
         return LearningTurn(user_input=message)
 
@@ -161,16 +169,18 @@ class LearningConversationController:
         active_topic, draft, original_message = self._pending
         self._pending = None
         if index == 0:
-            self.role_runtime.activate(runtime, self.service.active_goal())
-            return LearningTurn(user_input=original_message)
+            goal = self.service.active_goal()
+            activation = self.role_runtime.activate(runtime, goal, self.service.plan_for(goal) if goal is not None else None)
+            return LearningTurn(user_input=original_message, notice=activation, stage="正在继续当前学习路径…")
         if index == 1:
             self.service.pause_active_goal(
                 session_sink=runtime.session_sink,
                 session_id=runtime.agent.session_id,
             )
             self._confirm(draft, runtime)
-            self.role_runtime.activate(runtime, self.service.active_goal())
-            return LearningTurn(user_input=original_message)
+            goal = self.service.active_goal()
+            activation = self.role_runtime.activate(runtime, goal, self.service.plan_for(goal) if goal is not None else None)
+            return LearningTurn(user_input=original_message, notice=activation, stage="正在准备第 1 步…")
         if index == 2:
             return LearningTurn(notice=f"已保留当前学习路径“{active_topic}”。")
         return LearningTurn(notice="无效选择。")
@@ -225,6 +235,17 @@ def _might_be_learning_intent(message: str) -> bool:
     lowered = message.casefold()
     signals = (
         "learn", "study", "review", "continue learning", "tutorial", "practice",
-        "学习", "学一下", "复习", "继续学习", "继续之前的学习", "入门", "掌握", "教程", "练习",
+        "学习", "我想学", "想学", "帮我学", "带我学", "学一下", "复习", "继续学习", "继续之前的学习", "入门", "掌握", "教程", "练习",
     )
     return any(signal in lowered for signal in signals)
+
+
+def _start_notice(goal, plan) -> str:
+    if goal is None or plan is None or not plan.steps:
+        return "已创建学习路径。接下来我会直接带你开始第一步。"
+    return "\n".join([
+        f"已创建学习路径：{goal.topic}",
+        "学习阶段：路径已创建，正在准备第一步。",
+        f"第 1 步：{plan.steps[0].title}",
+        "接下来我会直接开始讲解，不需要你再输入命令。",
+    ])
