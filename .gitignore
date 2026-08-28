@@ -16,6 +16,7 @@ venv/
 .DS_Store
 .pytest_cache/
 .tmp/
+/pytest-*/
 /docs/
 /本地文档/
 runs/

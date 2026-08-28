@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "benchmarks" / "baseline_cases.json"
-DEFAULT_WORK_DIR = ROOT / ".techpilot" / "e2-lite"
+DEFAULT_WORK_DIR = ROOT / ".tmp" / "pytest-baseline"
 DEFAULT_OUTPUT = DEFAULT_WORK_DIR / "latest.json"
 
 
