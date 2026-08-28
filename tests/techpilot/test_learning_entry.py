@@ -181,3 +181,49 @@ def test_tui_renders_learning_progress_before_starting_first_step(tmp_path, monk
     assert "学习进度" in tui.transcript_text
     assert "正在准备第一步" in tui.transcript_text
     assert started == [("我想学 Python 异步", "正在准备第 1 步…")]
+
+
+def test_tui_does_not_duplicate_user_echo_when_learning_prepares_a_model_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv("TECHPILOT_CONFIG_DIR", str(tmp_path / "config"))
+    runtime = SimpleNamespace(
+        session_sink=None,
+        agent=SimpleNamespace(session_id="tui-no-duplicate", llm=object()),
+        config=SimpleNamespace(model="fake-model"),
+    )
+    tui = TechPilotTui()
+    tui.bind_runtime(runtime)
+    tui._start_runtime_turn = lambda text, *, status="正在思考…": None
+
+    tui._apply_learning_turn(
+        "我想学 Python 异步",
+        LearningTurn(user_input="我想学 Python 异步", notice="已创建学习路径。"),
+    )
+
+    assert tui.transcript_text.count("❯ you") == 1
+    assert tui._suppressed_user_echo == "我想学 Python 异步"
+
+
+def test_tui_passes_tool_free_one_turn_options_for_a_quick_introduction(tmp_path, monkeypatch):
+    monkeypatch.setenv("TECHPILOT_CONFIG_DIR", str(tmp_path / "config"))
+    runtime = SimpleNamespace(
+        session_sink=None,
+        agent=SimpleNamespace(session_id="tui-quick-intro", llm=object()),
+        config=SimpleNamespace(model="fake-model"),
+    )
+    tui = TechPilotTui()
+    tui.bind_runtime(runtime)
+    started: list[tuple[str, str, bool, bool]] = []
+    tui._start_runtime_turn = lambda text, *, status="正在思考…", allow_tools=True, clear_role_after_turn=False: started.append(
+        (text, status, allow_tools, clear_role_after_turn)
+    )
+
+    tui._apply_learning_turn(
+        "我想学 FastAPI，简单介绍一下",
+        LearningTurn(
+            user_input="我想学 FastAPI，简单介绍一下",
+            allow_tools=False,
+            clear_role_after_turn=True,
+        ),
+    )
+
+    assert started == [("我想学 FastAPI，简单介绍一下", "正在思考…", False, True)]

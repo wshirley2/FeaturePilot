@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from prompt_toolkit.application import Application as PromptToolkitApplication
 from prompt_toolkit.data_structures import Point
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.key_binding.key_processor import KeyPress
 from prompt_toolkit.keys import Keys
@@ -179,7 +180,7 @@ def test_tui_uses_one_transcript_instead_of_side_panels(tmp_path, monkeypatch):
     assert tui._activity_container in children
     assert tui.input.window in children
     assert application.options["full_screen"] is False
-    assert application.options["erase_when_done"] is False
+    assert application.options["erase_when_done"] is True
     assert application.options["color_depth"] is ColorDepth.DEPTH_24_BIT
 
 
@@ -297,12 +298,47 @@ def test_tui_run_starts_with_the_welcome_panel_visible(tmp_path, monkeypatch):
             return 0
 
     monkeypatch.setattr("techpilot.chat.tui.Application", FakeApplication)
+    monkeypatch.setattr("techpilot.chat.tui.print_formatted_text", lambda *_args, **_kwargs: None)
 
     assert tui.run() == 0
     assert tui._welcome_visible
     rendered = "".join(fragment[1] for fragment in tui._welcome_fragments())
     assert "┌─ TechPilot · Local-first Chat" in rendered
     assert "Type a message to begin" in rendered
+
+
+def test_tui_exit_emits_complete_colored_transcript_to_scrollback(tmp_path, monkeypatch):
+    store = SessionStore(tmp_path / "sessions")
+    store.create("tui-session", repository_root=tmp_path, model="fake-model")
+    tui = TechPilotTui()
+    tui.bind_runtime(_runtime(tmp_path, store, "tui-session"))
+    tui._append_transcript("you", "介绍下你自己", kind="user")
+    tui._append_transcript("TechPilot", "我是 TechPilot。", kind="assistant")
+    emitted: list[tuple[object, dict[str, object]]] = []
+
+    class FakeApplication:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run(self):
+            return 0
+
+    def record_transcript(fragments, **kwargs) -> None:
+        emitted.append((fragments, kwargs))
+
+    monkeypatch.setattr("techpilot.chat.tui.Application", FakeApplication)
+    monkeypatch.setattr("techpilot.chat.tui.print_formatted_text", record_transcript)
+
+    assert tui.run() == 0
+    assert len(emitted) == 1
+    fragments, kwargs = emitted[0]
+    assert isinstance(fragments, FormattedText)
+    rendered = "".join(text for _style, text in fragments)
+    assert "┌─ TechPilot · Local-first Chat" in rendered
+    assert "介绍下你自己" in rendered
+    assert "我是 TechPilot。" in rendered
+    assert kwargs["style"] is tui._style
+    assert kwargs["color_depth"] is ColorDepth.DEPTH_24_BIT
 
 
 def test_tui_welcome_accepts_the_first_message_directly(tmp_path):
@@ -323,6 +359,32 @@ def test_tui_welcome_accepts_the_first_message_directly(tmp_path):
     assert tui._welcome_visible
     assert "Local-first coding agent" in tui.transcript_text
     assert finished.wait(timeout=1)
+
+
+def test_tui_restores_user_and_assistant_messages_from_a_resumed_session(tmp_path):
+    store = SessionStore(tmp_path / "sessions")
+    store.create("tui-session", repository_root=tmp_path, model="fake-model")
+    store.append(SessionEvent(
+        event_type=RuntimeEventType.TURN_STARTED.value,
+        session_id="tui-session",
+        turn_id="turn-1",
+        payload={"user_input": "介绍下你自己"},
+    ))
+    store.append(SessionEvent(
+        event_type=RuntimeEventType.TURN_COMPLETED.value,
+        session_id="tui-session",
+        turn_id="turn-1",
+        payload={"content": "我是 TechPilot。"},
+    ))
+
+    tui = TechPilotTui()
+    tui.bind_runtime(_runtime(tmp_path, store, "tui-session"))
+
+    assert "Local-first coding agent" in tui.transcript_text
+    assert "介绍下你自己" in tui.transcript_text
+    assert "我是 TechPilot。" in tui.transcript_text
+
+
 
 
 def test_tui_user_marker_is_not_highlighted_but_question_body_is(tmp_path):

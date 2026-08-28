@@ -14,10 +14,11 @@ import threading
 import time
 from dataclasses import dataclass
 
+from prompt_toolkit import print_formatted_text
 from prompt_toolkit.application import Application
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.formatted_text import StyleAndTextTuples
+from prompt_toolkit.formatted_text import FormattedText, StyleAndTextTuples
 from prompt_toolkit.input.defaults import create_input
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.key_processor import KeyPress
@@ -188,6 +189,7 @@ class TechPilotTui:
         self._pending_learning_choice: _PendingLearningChoice | None = None
         self._learning_routing = False
         self._suppressed_user_echo: str | None = None
+        self._restored_session_id: str | None = None
         self._running = False
         self._streamed_turn = False
         self._stream_entry: _TranscriptEntry | None = None
@@ -196,6 +198,7 @@ class TechPilotTui:
         self._stream_buffer = ""
         self._follow_tail = True
         self._status = "Ready"
+        self._style = _tui_style()
         # The welcome panel is the first transcript block, not a separate
         # page. It remains part of the history while newer entries scroll it
         # out of the viewport naturally.
@@ -320,49 +323,11 @@ class TechPilotTui:
             # palette it explicitly defines instead of degrading tool and
             # safety distinctions to monochrome.
             color_depth=ColorDepth.DEPTH_24_BIT,
-            style=Style.from_dict({
-                "topbar": "bg:#0f1014 #7bba55",
-                "status": "bg:#0f1014 #6e6d72",
-                "activity": "bg:#0f1014 #527c3b",
-                "divider": "bg:#0f1014 #626263",
-                "input": "bg:#0f1014 #cfd1d6",
-                "transcript": "bg:#0f1014 #cfd1d6",
-                "user": "bg:#34363b #f0f1f3",
-                "assistant": "#eee9df",
-                "tool": "#85898f",
-                "tool-toggle": "bold #a2a5aa",
-                "tool-group": "#7f858d",
-                "tool-group-toggle": "bold #b0b6bf",
-                "tool-running": "#88c5d1",
-                "tool-completed": "#8fbe83",
-                "tool-problem": "#e07c7c",
-                "permission": "#d7a65b",
-                "blocked": "#e06d6d",
-                "error": "#e06d6d",
-                "details": "#9298a1",
-                "choice": "#d7a65b",
-                "welcome-border": "#7bba55",
-                "welcome-brand": "bold #f0c674",
-                "welcome-subtitle": "#9aa0a6",
-                "welcome-copy": "#e5e7eb",
-                "welcome-meta": "#9fc8ff",
-                "welcome-tips": "#cfd1d6",
-                "welcome-hint": "bold #7bba55",
-                "markdown-heading": "bold #f0c674",
-                "markdown-list": "#e8eaed",
-                "markdown-quote": "#a9b2bd",
-                "markdown-code": "bg:#20242a #b9ccec",
-                "markdown-code-fence": "#707780",
-                "markdown-inline-code": "bg:#252b34 #9fc8ff",
-                "markdown-strong": "bold #ffffff",
-                "markdown-rule": "#626263",
-            }),
-            # Keep the transcript in the terminal's normal scrollback.  The
-            # alternate screen makes /exit look like it erased the session,
-            # unlike Claude-style terminal UIs that leave the conversation
-            # visible after returning to the shell.
+            style=self._style,
+            # The dynamic viewport only contains the latest screenful. Clear
+            # it on exit, then emit the complete styled transcript below.
             full_screen=False,
-            erase_when_done=False,
+            erase_when_done=True,
             mouse_support=True,
             before_render=self._drain_updates,
         )
@@ -402,6 +367,7 @@ class TechPilotTui:
         )
         if hasattr(runtime.agent, "llm"):
             self.learning_conversation = LearningConversationController(self.learning.service)
+        self._restore_session_transcript()
         self._status = "Ready"
         self._refresh_status()
 
@@ -411,7 +377,47 @@ class TechPilotTui:
         self._welcome_visible = True
         self._refresh_status()
         self.application = self._build_application()
-        return self.application.run()
+        result = self.application.run()
+        self._emit_exit_transcript()
+        return result
+
+    def _emit_exit_transcript(self) -> None:
+        """Write the complete styled history to normal terminal scrollback."""
+
+        fragments = FormattedText((style, text) for style, text, *_ in self._transcript_fragments())
+        print_formatted_text(
+            fragments,
+            style=self._style,
+            color_depth=ColorDepth.DEPTH_24_BIT,
+        )
+
+    def _restore_session_transcript(self) -> None:
+        """Project durable chat messages back into the TUI after ``--resume``."""
+
+        if self.runtime is None:
+            return
+        session_store = getattr(self.runtime, "session_store", None)
+        if session_store is None:
+            return
+        session_id = self.runtime.agent.session_id
+        if self._restored_session_id == session_id:
+            return
+        try:
+            projection = session_store.replay(session_id)
+        except (OSError, ValueError):
+            return
+        for message in projection.messages:
+            role = message.get("role")
+            content = message.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if role == "user":
+                self._entries.append(_TranscriptEntry("you", content, "user"))
+            elif role == "assistant":
+                self._entries.append(_TranscriptEntry("TechPilot", content, "assistant"))
+        self._restored_session_id = session_id
+        self._trim_transcript()
+
 
     def enqueue_event(self, event: RuntimeEvent) -> None:
         self._updates.put(("event", event))
@@ -551,7 +557,14 @@ class TechPilotTui:
         self._start_runtime_turn(text)
         return True
 
-    def _start_runtime_turn(self, text: str, *, status: str = "正在思考…") -> None:
+    def _start_runtime_turn(
+        self,
+        text: str,
+        *,
+        status: str = "正在思考…",
+        allow_tools: bool = True,
+        clear_role_after_turn: bool = False,
+    ) -> None:
         self._follow_tail = True
         self._running = True
         self._streamed_turn = False
@@ -559,17 +572,22 @@ class TechPilotTui:
         self._stream_buffer = ""
         self._status = status
         self._refresh_status()
-        threading.Thread(target=self._run_turn, args=(text,), daemon=True).start()
+        arguments = (text,) if allow_tools and not clear_role_after_turn else (text, allow_tools, clear_role_after_turn)
+        threading.Thread(target=self._run_turn, args=arguments, daemon=True).start()
 
     def _prepare_learning_turn(self, text: str) -> None:
         assert self.runtime is not None
         assert self.learning_conversation is not None
-        self._updates.put(("learning_stage", "✻ 正在准备 Skill…"))
-        self._invalidate()
         try:
             turn = self.learning_conversation.prepare(self.runtime, text)
         except Exception as error:
             turn = LearningTurn(notice=f"学习请求暂时无法处理：{error}")
+        # Only show Skill preparation after routing confirms that a learning
+        # Role will actually be used. Lightweight introductions and pending
+        # choices must not claim that a Skill is loading.
+        if turn.stage is not None:
+            self._updates.put(("learning_stage", "✻ 正在准备 Skill…"))
+            self._invalidate()
         self._updates.put(("learning_prepared", (text, turn)))
         self._invalidate()
 
@@ -583,16 +601,23 @@ class TechPilotTui:
             self._status = "请选择学习方式"
             self._refresh_status()
             return
+        user_echo_visible = user_already_visible
         if turn.notice is not None:
             if not user_already_visible:
                 self._append_transcript("you", text, kind="user")
+            user_echo_visible = True
             self._append_transcript("学习进度", turn.notice, kind="system")
         if turn.stage is not None:
             self._status = turn.stage
         if turn.user_input is not None:
-            if user_already_visible and turn.user_input == text:
+            if user_echo_visible and turn.user_input == text:
                 self._suppressed_user_echo = text
-            self._start_runtime_turn(turn.user_input, status=turn.stage or "正在思考…")
+            options: dict[str, object] = {"status": turn.stage or "正在思考…"}
+            if not turn.allow_tools:
+                options["allow_tools"] = False
+            if turn.clear_role_after_turn:
+                options["clear_role_after_turn"] = True
+            self._start_runtime_turn(turn.user_input, **options)
             return
         self._status = "Ready"
         self._refresh_status()
@@ -678,14 +703,19 @@ class TechPilotTui:
             return "Permission [1/2/3] > "
         return "❯ "
 
-    def _run_turn(self, text: str) -> None:
+    def _run_turn(self, text: str, allow_tools: bool = True, clear_role_after_turn: bool = False) -> None:
         assert self.runtime is not None
         try:
-            self.runtime.run_turn(text)
+            if allow_tools:
+                self.runtime.run_turn(text)
+            else:
+                self.runtime.run_turn(text, allow_tools=False)
         except Exception as error:
             self._updates.put(("worker_error", str(error)))
             self._invalidate()
         finally:
+            if clear_role_after_turn:
+                self.runtime.clear_role()
             self._updates.put(("turn_finished", None))
             self._invalidate()
 
@@ -1221,6 +1251,48 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
 _QUOTE_RE = re.compile(r"^(\s*)>\s?(.*)$")
 _INLINE_MARKDOWN_RE = re.compile(r"(`[^`]+`|\*\*.+?\*\*|__.+?__)")
+
+
+def _tui_style() -> Style:
+    """Return the shared palette for the live viewport and exit transcript."""
+
+    return Style.from_dict({
+        "topbar": "bg:#0f1014 #7bba55",
+        "status": "bg:#0f1014 #6e6d72",
+        "activity": "bg:#0f1014 #527c3b",
+        "divider": "bg:#0f1014 #626263",
+        "input": "bg:#0f1014 #cfd1d6",
+        "transcript": "bg:#0f1014 #cfd1d6",
+        "user": "bg:#34363b #f0f1f3",
+        "assistant": "#eee9df",
+        "tool": "#85898f",
+        "tool-toggle": "bold #a2a5aa",
+        "tool-group": "#7f858d",
+        "tool-group-toggle": "bold #b0b6bf",
+        "tool-running": "#88c5d1",
+        "tool-completed": "#8fbe83",
+        "tool-problem": "#e07c7c",
+        "permission": "#d7a65b",
+        "blocked": "#e06d6d",
+        "error": "#e06d6d",
+        "details": "#9298a1",
+        "choice": "#d7a65b",
+        "welcome-border": "#7bba55",
+        "welcome-brand": "bold #f0c674",
+        "welcome-subtitle": "#9aa0a6",
+        "welcome-copy": "#e5e7eb",
+        "welcome-meta": "#9fc8ff",
+        "welcome-tips": "#cfd1d6",
+        "welcome-hint": "bold #7bba55",
+        "markdown-heading": "bold #f0c674",
+        "markdown-list": "#e8eaed",
+        "markdown-quote": "#a9b2bd",
+        "markdown-code": "bg:#20242a #b9ccec",
+        "markdown-code-fence": "#707780",
+        "markdown-inline-code": "bg:#252b34 #9fc8ff",
+        "markdown-strong": "bold #ffffff",
+        "markdown-rule": "#626263",
+    })
 
 
 def _message_marker(kind: str) -> str:
