@@ -49,3 +49,15 @@ class LearningRoleRuntime:
             f"# Allowed Skill\n\n{skill_context}",
         )
         return "✻ Skill 已准备好，开始第 1 步…"
+
+    @staticmethod
+    def activate_quick_introduction(runtime: TaskRuntime) -> None:
+        """Use a one-turn teaching overlay without loading a Skill or tools."""
+
+        runtime.activate_role(
+            "quick-technical-introduction",
+            "# Temporary Role: Quick Technical Introduction\n\n"
+            "仅回答用户本轮要求的技术简介。使用用户的语言，先给简明结论，再解释关键概念；"
+            "可提供非常短的示例，但不要创建或修改文件、运行命令、调用工具、规划项目、"
+            "追问学习背景、建立学习路径，或主动提及既有学习路径。回答完成后立即结束。",
+        )

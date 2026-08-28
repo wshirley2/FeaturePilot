@@ -259,6 +259,8 @@ class ChatSession:
             else None
         )
         self._learning_choice: LearningChoice | None = None
+        self._turn_allows_tools = True
+        self._clear_role_after_turn = False
 
     def run(self) -> int:
         self.show_startup()
@@ -304,7 +306,10 @@ class ChatSession:
                     continue
 
             try:
-                response = self.runtime.run_turn(user_input)
+                if self._turn_allows_tools:
+                    response = self.runtime.run_turn(user_input)
+                else:
+                    response = self.runtime.run_turn(user_input, allow_tools=False)
                 # Providers used by embedders may not stream token callbacks.
                 sink = self.runtime.agent.event_sink
                 if not getattr(sink, "last_turn_streamed", False) and response:
@@ -314,6 +319,10 @@ class ChatSession:
             except Exception as error:
                 self.console.print(f"[red]Error: {error}[/red]")
             finally:
+                if self._clear_role_after_turn:
+                    self.runtime.clear_role()
+                self._turn_allows_tools = True
+                self._clear_role_after_turn = False
                 self._ensure_session_persisted()
 
     def _handle_learning_turn(self, turn: LearningTurn) -> str | None:
@@ -326,6 +335,8 @@ class ChatSession:
             self.console.print(Panel(turn.notice, title="学习进度", border_style="green"))
         if turn.stage is not None:
             self.console.print(f"[dim]{turn.stage}[/dim]")
+        self._turn_allows_tools = turn.allow_tools
+        self._clear_role_after_turn = turn.clear_role_after_turn
         return turn.user_input
 
     def _read_input(self, prompt: str) -> str:

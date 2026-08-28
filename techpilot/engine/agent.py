@@ -175,6 +175,8 @@ class Agent:
         on_token=None,
         on_tool=None,
         cancellation_token: CancellationToken | None = None,
+        *,
+        allow_tools: bool = True,
     ) -> str:
         """Process one user message. May involve multiple LLM/tool rounds."""
         turn_id = uuid4().hex
@@ -237,7 +239,7 @@ class Agent:
 
                 resp = self.llm.chat(
                     messages=self._full_messages(),
-                    tools=self._tool_schemas(),
+                    tools=self._tool_schemas() if allow_tools else [],
                     on_token=handle_token,
                 )
                 turn_prompt_tokens += resp.prompt_tokens

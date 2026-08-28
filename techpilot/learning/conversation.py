@@ -38,6 +38,8 @@ class LearningTurn:
     choice: LearningChoice | None = None
     notice: str | None = None
     stage: str | None = None
+    allow_tools: bool = True
+    clear_role_after_turn: bool = False
 
     @property
     def should_run_model(self) -> bool:
@@ -133,8 +135,8 @@ class LearningConversationController:
             runtime.clear_role()
             return LearningTurn(user_input=message)
         if route.intent == "introduce":
-            activation = self.role_runtime.activate(runtime, active, self.service.plan_for(active) if active is not None else None)
-            return LearningTurn(user_input=message, notice=activation, stage="正在进入学习模式…")
+            self.role_runtime.activate_quick_introduction(runtime)
+            return LearningTurn(user_input=message, allow_tools=False, clear_role_after_turn=True)
         if route.intent in {"continue", "review"}:
             goal = self.service.continue_goal() if route.intent == "continue" else self.service.review_goal()
             activation = self.role_runtime.activate(runtime, goal, self.service.plan_for(goal) if goal is not None else None)
@@ -169,9 +171,10 @@ class LearningConversationController:
         active_topic, draft, original_message = self._pending
         self._pending = None
         if index == 0:
-            goal = self.service.active_goal()
-            activation = self.role_runtime.activate(runtime, goal, self.service.plan_for(goal) if goal is not None else None)
-            return LearningTurn(user_input=original_message, notice=activation, stage="正在继续当前学习路径…")
+            # "先简单了解" is a one-turn detour. It uses neither the learning
+            # Skill nor Runtime tools, and leaves the persisted path intact.
+            self.role_runtime.activate_quick_introduction(runtime)
+            return LearningTurn(user_input=original_message, allow_tools=False, clear_role_after_turn=True)
         if index == 1:
             self.service.pause_active_goal(
                 session_sink=runtime.session_sink,

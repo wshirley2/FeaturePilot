@@ -93,6 +93,25 @@ def test_model_router_fails_closed_to_plain_chat_on_low_confidence(tmp_path):
     assert LearningIntentRouter(service).route(runtime, "我最近想系统了解异步") == LearningRoute("chat")
 
 
+def test_introduction_route_uses_a_one_turn_tool_free_teaching_overlay(tmp_path):
+    service = LearningService(LearningStore(tmp_path / "learning"))
+    runtime = FakeRuntime()
+    controller = LearningConversationController(
+        service,
+        router=FixedRouter(LearningRoute("introduce", "FastAPI", 0.96)),
+    )
+
+    turn = controller.prepare(runtime, "我想学 FastAPI，简单介绍一下")
+
+    assert turn.user_input == "我想学 FastAPI，简单介绍一下"
+    assert turn.notice is None
+    assert turn.stage is None
+    assert not turn.allow_tools
+    assert turn.clear_role_after_turn
+    assert runtime.activated[0][0] == "quick-technical-introduction"
+    assert "Temporary Role: Quick Technical Introduction" in runtime.activated[0][1]
+
+
 def test_start_route_exposes_progress_and_first_step_before_model_turn(tmp_path):
     service = LearningService(LearningStore(tmp_path / "learning"))
     runtime = FakeRuntime()
@@ -132,6 +151,27 @@ def test_starting_a_different_path_requires_a_choice_and_pause_then_start_is_saf
     assert service.store.load_goal(active.id).status == "paused"
     assert service.active_goal() is not None
     assert service.active_goal().topic == "Python 异步"
+
+
+def test_quick_introduction_keeps_current_path_and_does_not_activate_learning_role(tmp_path):
+    service = LearningService(LearningStore(tmp_path / "learning"))
+    active = service.confirm(service.draft_from_command("asynchronous programming"), baseline_notes=None).goal
+    runtime = FakeRuntime()
+    controller = LearningConversationController(
+        service,
+        router=FixedRouter(LearningRoute("start", "FastAPI", 0.96)),
+    )
+
+    pending = controller.prepare(runtime, "我想学 FastAPI")
+    resolved = controller.choose(runtime, 0)
+
+    assert pending.choice is not None
+    assert resolved.user_input == "我想学 FastAPI"
+    assert resolved.notice is None
+    assert not resolved.allow_tools
+    assert resolved.clear_role_after_turn
+    assert runtime.activated[0][0] == "quick-technical-introduction"
+    assert service.active_goal() == active
 
 
 def test_cancelled_goal_is_reviewable_but_never_resumed_by_continue(tmp_path):

@@ -112,10 +112,15 @@ class TaskRuntime:
         user_input: str,
         *,
         cancellation_token: CancellationToken | None = None,
+        allow_tools: bool = True,
     ) -> str:
         """Run one controlled Agent turn through the shared Runtime boundary."""
 
-        return self.agent.chat(user_input, cancellation_token=cancellation_token)
+        return self.agent.chat(
+            user_input,
+            cancellation_token=cancellation_token,
+            allow_tools=allow_tools,
+        )
 
     def activate_role(self, role_id: str, role_context: str) -> None:
         """Activate a code-owned Role without creating a second Agent Runtime."""
