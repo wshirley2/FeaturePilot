@@ -8,8 +8,10 @@ from pathlib import Path
 
 from .cases import (
     CORE_V0_SUITE,
+    ROLE_RUNTIME_VALIDATION_SUITE,
     RUNNER_VALIDATION_SUITE,
     build_core_v0_cases,
+    build_role_runtime_validation_cases,
     build_runner_validation_cases,
 )
 from .contracts import BaselineReference
@@ -29,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--suite",
         default=CORE_V0_SUITE,
-        choices=[CORE_V0_SUITE, RUNNER_VALIDATION_SUITE],
+        choices=[CORE_V0_SUITE, RUNNER_VALIDATION_SUITE, ROLE_RUNTIME_VALIDATION_SUITE],
     )
     parser.add_argument("--output", type=Path, help="Write the structured result manifest to this JSON path.")
     parser.add_argument(
@@ -96,7 +98,13 @@ def main(argv: list[str] | None = None) -> int:
         print("failed_case_ids: " + (", ".join(summary.failed_case_ids) if summary.failed_case_ids else "none"))
         print(f"summary: {output}")
         return 0 if summary.passed == summary.total else 1
-    cases = build_core_v0_cases() if args.suite == CORE_V0_SUITE else build_runner_validation_cases()
+    cases = (
+        build_core_v0_cases()
+        if args.suite == CORE_V0_SUITE
+        else build_role_runtime_validation_cases()
+        if args.suite == ROLE_RUNTIME_VALIDATION_SUITE
+        else build_runner_validation_cases()
+    )
     report = ReplayRunner().run(cases)
     payload = report.to_dict()
     comparison = None

@@ -16,11 +16,14 @@ from techpilot.engine.events import CallbackEventSink, RuntimeEvent, RuntimeEven
 from techpilot.engine.llm import LLMResponse, ToolCall
 from techpilot.engine.tool_execution import ToolConcurrency, ToolEffect, ToolExecutionDescription, ToolExecutionPlan
 from techpilot.engine.tools.base import Tool
+from techpilot.runtime import RuntimeBootstrap, RuntimeBootstrapInput
 from techpilot.runtime.extensions import (
     PayloadContract,
+    RoleHostConfiguration,
     RoleRegistry,
     RoleSkillActivator,
     RoleSpec,
+    RuntimeCompatibility,
     SkillRegistry,
     ToolAllowlist,
     ToolRequest,
@@ -43,6 +46,7 @@ class ReplayRunner:
             "context-collapse": self._run_context_collapse,
             "session-projection": self._run_session_projection,
             "role-skill-activation": self._run_role_skill_activation,
+            "role-runtime-lifecycle": self._run_role_runtime_lifecycle,
             "instruction-carry": self._run_instruction_carry,
         }
 
@@ -287,6 +291,114 @@ class ReplayRunner:
             return {"outcome": outcome, "error": str(error)}
 
     @staticmethod
+    def _run_role_runtime_lifecycle(case: ReplayCase, root: Path) -> Mapping[str, Any]:
+        """Exercise Role isolation against the real Runtime, not a recording stub."""
+
+        mode = _string(case.input, "mode")
+        marker = _string(case.input, "marker")
+        _expect(mode == _string(case.expected, "outcome"), "Role lifecycle case outcome mismatch")
+        provider = _ReplayProvider([LLMResponse(content="default-chat-response")])
+        runtime = _build_role_runtime(root, provider)
+        inspector, reporter = _replay_roles()
+        roles = RoleRegistry((inspector, reporter))
+        skills = SkillRegistry(roles)
+        activator = RoleSkillActivator(
+            roles,
+            skills,
+            (
+                ToolAllowlist(role_id=inspector.id, tool_names=("runtime_probe",)),
+                ToolAllowlist(role_id=reporter.id),
+            ),
+        )
+
+        if mode == "registration":
+            _expect([item.role.id for item in roles.registrations()] == [inspector.id, reporter.id], "registration order changed")
+            _expect(all(item.status == "active" for item in roles.registrations()), "new Role registration is not active")
+            _expect(runtime.active_role is None, "registration unexpectedly activated a Role")
+        elif mode == "disabled":
+            roles.disable(inspector.id)
+            try:
+                activator.activate(runtime, role_id=inspector.id, role_context=marker)
+            except ValueError as error:
+                _expect("role is disabled" in str(error), "disabled Role did not fail closed")
+            else:
+                raise AssertionError("disabled Role reached Runtime")
+            _expect(runtime.active_role is None, "disabled Role changed Runtime state")
+        elif mode == "incompatible":
+            incompatible = inspector.model_copy(
+                update={"runtime_compatibility": RuntimeCompatibility(minimum_api_version="2.0.0")}
+            )
+            try:
+                RoleRegistry((incompatible,))
+            except ValueError as error:
+                _expect("incompatible with Runtime API" in str(error), "incompatible Role was registered")
+            else:
+                raise AssertionError("incompatible Role was registered")
+            _expect(runtime.active_role is None, "incompatible Role changed Runtime state")
+        elif mode == "configuration":
+            configured = inspector.model_copy(
+                update={"host_configuration_contract": PayloadContract(schema_id="runtime-config-v1", required_keys=("region",))}
+            )
+            configured_roles = RoleRegistry((configured, reporter))
+            configured_activator = RoleSkillActivator(
+                configured_roles,
+                SkillRegistry(configured_roles),
+                (ToolAllowlist(role_id=configured.id, tool_names=("runtime_probe",)),),
+            )
+            try:
+                configured_activator.activate(
+                    runtime,
+                    role_id=configured.id,
+                    role_context=marker,
+                    host_configuration=RoleHostConfiguration(role_id=configured.id),
+                )
+            except ValueError as error:
+                _expect("missing required fields: region" in str(error), "invalid Role configuration did not fail closed")
+            else:
+                raise AssertionError("invalid Role configuration reached Runtime")
+            _expect(runtime.active_role is None, "invalid Role configuration changed Runtime state")
+        elif mode == "activation":
+            activation = activator.activate(runtime, role_id=inspector.id, role_context=marker)
+            _expect(activation.tool_names == ("runtime_probe",), "Host tool allowlist changed during activation")
+            _expect(runtime.active_role is not None and runtime.active_role.role_id == inspector.id, "Role was not activated")
+            _expect("runtime_probe" in {tool.name for tool in runtime.tools}, "allowlisted Role tool was not projected")
+            _expect(marker in runtime.agent._system_context, "Role context was not projected")
+        elif mode == "switch":
+            activator.activate(runtime, role_id=inspector.id, role_context=f"{marker}-inspector")
+            activator.activate(runtime, role_id=reporter.id, role_context=f"{marker}-reporter")
+            _expect(runtime.active_role is not None and runtime.active_role.role_id == reporter.id, "Role switch did not establish target Role")
+            _expect("runtime_probe" not in {tool.name for tool in runtime.tools}, "prior Role tool leaked across switch")
+            _expect(f"{marker}-reporter" in runtime.agent._system_context, "target Role context missing after switch")
+            _expect(f"{marker}-inspector" not in runtime.agent._system_context, "prior Role context leaked across switch")
+        elif mode == "scope-exception":
+            try:
+                with runtime.role_scope(inspector.id, marker, tool_names=("runtime_probe",)):
+                    raise RuntimeError("replay cancellation")
+            except RuntimeError as error:
+                _expect(str(error) == "replay cancellation", "Role scope hid original failure")
+            _expect(runtime.active_role is None, "Role scope did not restore default Runtime state")
+            _expect("runtime_probe" not in {tool.name for tool in runtime.tools}, "temporary Role tool leaked after exception")
+            _expect(marker not in runtime.agent._system_context, "temporary Role context leaked after exception")
+        elif mode == "resume":
+            activator.activate(runtime, role_id=inspector.id, role_context=marker)
+            resumed = _build_role_runtime(root, _ReplayProvider([]), resume_session_id=runtime.agent.session_id)
+            _expect(resumed.active_role is None, "Session resume reactivated a historical Role")
+            _expect("runtime_probe" not in {tool.name for tool in resumed.tools}, "Session resume restored historical Role tools")
+            _expect(any("不会自动恢复 Role、工具或历史授权" in notice for notice in resumed.consume_recovery_notices()), "Session resume omitted Role recovery notice")
+        elif mode == "clear-chat":
+            activator.activate(runtime, role_id=inspector.id, role_context=marker)
+            runtime.clear_role()
+            response = runtime.run_turn("continue as default Chat")
+            _expect(response == "default-chat-response", "default Chat response mismatch after Role cleanup")
+            _expect(runtime.active_role is None, "clear_role did not restore default Runtime state")
+            _expect("runtime_probe" not in {tool.name for tool in runtime.tools}, "cleared Role tool leaked into default Chat")
+            _expect(marker not in runtime.agent._system_context, "cleared Role context leaked into default Chat")
+            _expect(provider.requests and provider.requests[-1]["tools"] == [], "cleared Role tool remained model-visible")
+        else:
+            raise ValueError(f"unknown role lifecycle mode: {mode}")
+        return {"outcome": mode}
+
+    @staticmethod
     def _run_instruction_carry(case: ReplayCase, root: Path) -> Mapping[str, Any]:
         del root
         constraint = _string(case.input, "constraint")
@@ -359,6 +471,51 @@ class _RoleTarget:
 
     def activate_role(self, role_id: str, role_context: str, *, tool_names: tuple[str, ...] = ()) -> None:
         self.activations.append((role_id, role_context, tool_names))
+
+
+class _ReplayRoleTool(Tool):
+    name = "runtime_probe"
+    description = "A test-only Role tool used to verify Runtime isolation."
+    parameters = {"type": "object", "properties": {}, "additionalProperties": False}
+
+    def execute(self) -> str:
+        return "runtime-probe"
+
+
+def _replay_roles() -> tuple[RoleSpec, RoleSpec]:
+    return (
+        RoleSpec(
+            id="runtime-inspector",
+            title="Runtime inspector",
+            system_prompt="Inspect supplied Runtime evidence only.",
+            task_boundary="Verify Runtime facts without changing repository state.",
+        ),
+        RoleSpec(
+            id="runtime-reporter",
+            title="Runtime reporter",
+            system_prompt="Summarize supplied Runtime evidence only.",
+            task_boundary="Summarize Runtime facts without changing repository state.",
+        ),
+    )
+
+
+def _build_role_runtime(
+    root: Path,
+    provider: _ReplayProvider,
+    *,
+    resume_session_id: str | None = None,
+):
+    runtime = RuntimeBootstrap(provider_factory=lambda _config: provider).build(RuntimeBootstrapInput(
+        repository=root,
+        event_sink=CallbackEventSink(lambda _event: None),
+        tools=[],
+        system_context="Base Runtime replay context.",
+        session_directory=root / "sessions",
+        resume_session_id=resume_session_id,
+        model="fake-replay",
+    ))
+    runtime.role_tool_catalog["runtime_probe"] = _ReplayRoleTool()
+    return runtime
 
 
 def _description_for(effect: str, index: int) -> ToolExecutionDescription:

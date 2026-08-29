@@ -11,6 +11,8 @@ from techpilot.evaluation import (
     CORE_V0_CASE_SET_DIGEST,
     HOLDOUT_SCHEMA_VERSION,
     HOLDOUT_SUITE,
+    ROLE_RUNTIME_VALIDATION_CASE_COUNT,
+    ROLE_RUNTIME_VALIDATION_CASE_SET_DIGEST,
     RUNNER_VALIDATION_CASE_COUNT,
     BaselineReference,
     ExtendedCaseProvenance,
@@ -22,6 +24,7 @@ from techpilot.evaluation import (
     ReplayCategory,
     ReplayRunner,
     build_core_v0_cases,
+    build_role_runtime_validation_cases,
     build_runner_validation_cases,
     case_set_digest,
     holdout_case_set_metadata,
@@ -57,6 +60,28 @@ def test_runner_validation_deck_has_24_cases_across_every_handler() -> None:
     assert {case.category for case in cases} == set(ReplayCategory)
     assert all(case.suite == "runner-validation-v0" for case in cases)
     assert all(case.origin is ReplayCaseOrigin.RUNNER_VALIDATION for case in cases)
+
+
+def test_role_runtime_validation_suite_exercises_isolation_and_recovery_without_changing_core() -> None:
+    cases = build_role_runtime_validation_cases()
+
+    assert len(cases) == ROLE_RUNTIME_VALIDATION_CASE_COUNT == 9
+    assert case_set_digest(cases) == ROLE_RUNTIME_VALIDATION_CASE_SET_DIGEST
+    assert {case.scenario for case in cases} == {"role-runtime-lifecycle"}
+    assert {case.input["mode"] for case in cases} == {
+        "registration",
+        "disabled",
+        "incompatible",
+        "configuration",
+        "activation",
+        "switch",
+        "scope-exception",
+        "resume",
+        "clear-chat",
+    }
+    assert all(case.origin is ReplayCaseOrigin.RUNNER_VALIDATION for case in cases)
+    report = ReplayRunner(Path(__file__).parents[2]).run(cases)
+    assert report.passed == report.total == ROLE_RUNTIME_VALIDATION_CASE_COUNT
 
 
 def test_extended_cases_require_evidence_backed_provenance() -> None:

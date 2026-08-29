@@ -17,6 +17,9 @@ CORE_V0_CASE_COUNT = 144
 CORE_V0_CASE_SET_DIGEST = "fba626e31135d2de7379a21529b308860220759f174bae2a8a097aa81adaa367"
 RUNNER_VALIDATION_SUITE = "runner-validation-v0"
 RUNNER_VALIDATION_CASE_COUNT = 24
+ROLE_RUNTIME_VALIDATION_SUITE = "role-runtime-validation-v0"
+ROLE_RUNTIME_VALIDATION_CASE_COUNT = 9
+ROLE_RUNTIME_VALIDATION_CASE_SET_DIGEST = "12b0584f98aba6a81ea567f7b7ae54cd21de7acfdcff0bbfdc41f1832f305069"
 
 
 def build_core_v0_cases() -> tuple[ReplayCase, ...]:
@@ -64,6 +67,22 @@ def build_runner_validation_cases() -> tuple[ReplayCase, ...]:
     )
     if len(cases) != RUNNER_VALIDATION_CASE_COUNT:
         raise RuntimeError("runner validation deck must contain 24 cases")
+    return cases
+
+
+def build_role_runtime_validation_cases() -> tuple[ReplayCase, ...]:
+    """Return the independent Role Runtime isolation and recovery acceptance deck.
+
+    This deck deliberately stays outside frozen ``core-v0``. It validates the
+    Runtime integration added by RS-3 without changing the historical baseline.
+    """
+
+    cases = _role_runtime_cases()
+    ids = [case.id for case in cases]
+    if len(cases) != ROLE_RUNTIME_VALIDATION_CASE_COUNT or len(ids) != len(set(ids)):
+        raise RuntimeError("role runtime validation deck must contain unique cases")
+    if case_set_digest(cases) != ROLE_RUNTIME_VALIDATION_CASE_SET_DIGEST:
+        raise RuntimeError("role runtime validation deck changed; create a new version instead of rewriting it")
     return cases
 
 
@@ -196,6 +215,36 @@ def _contract_cases() -> tuple[ReplayCase, ...]:
             {"outcome": outcome, "marker": f"contract-{index:02d}"},
             {"outcome": outcome},
             "Role/Skill lifecycle and Tool request boundaries fail closed before entering Runtime execution.",
+        ))
+    return tuple(cases)
+
+
+def _role_runtime_cases() -> tuple[ReplayCase, ...]:
+    cases: list[ReplayCase] = []
+    modes = (
+        ("registration", ReplayCategory.CONTRACT),
+        ("disabled", ReplayCategory.CONTRACT),
+        ("incompatible", ReplayCategory.CONTRACT),
+        ("configuration", ReplayCategory.CONTRACT),
+        ("activation", ReplayCategory.CONTRACT),
+        ("switch", ReplayCategory.CONTRACT),
+        ("scope-exception", ReplayCategory.CONTRACT),
+        ("resume", ReplayCategory.PERSISTENCE),
+        ("clear-chat", ReplayCategory.CONTRACT),
+    )
+    for index, (mode, category) in enumerate(modes):
+        marker = f"rs34-context-evidence-{index:02d}-isolated"
+        cases.append(replace(
+            _case(
+                f"role-runtime-{mode}-{index:02d}",
+                category,
+                "role-runtime-lifecycle",
+                {"mode": mode, "marker": marker},
+                {"outcome": mode},
+                "An isolated test Role must not leak tools, context, permissions, or historical activation into default Chat.",
+            ),
+            suite=ROLE_RUNTIME_VALIDATION_SUITE,
+            origin=ReplayCaseOrigin.RUNNER_VALIDATION,
         ))
     return tuple(cases)
 

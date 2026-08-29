@@ -3,8 +3,11 @@
 from .cases import (
     CORE_V0_CASE_COUNT,
     CORE_V0_CASE_SET_DIGEST,
+    ROLE_RUNTIME_VALIDATION_CASE_COUNT,
+    ROLE_RUNTIME_VALIDATION_CASE_SET_DIGEST,
     RUNNER_VALIDATION_CASE_COUNT,
     build_core_v0_cases,
+    build_role_runtime_validation_cases,
     build_runner_validation_cases,
 )
 from .contracts import (
@@ -42,6 +45,8 @@ __all__ = [
     "CORE_V0_CASE_SET_DIGEST",
     "HOLDOUT_SCHEMA_VERSION",
     "HOLDOUT_SUITE",
+    "ROLE_RUNTIME_VALIDATION_CASE_COUNT",
+    "ROLE_RUNTIME_VALIDATION_CASE_SET_DIGEST",
     "RUNNER_VALIDATION_CASE_COUNT",
     "BaselineComparison",
     "BaselineReference",
@@ -60,6 +65,7 @@ __all__ = [
     "ReplayRunner",
     "ReplayTrack",
     "build_core_v0_cases",
+    "build_role_runtime_validation_cases",
     "build_runner_validation_cases",
     "case_set_digest",
     "default_holdout_report_path",

@@ -155,7 +155,10 @@ class TaskRuntime:
         effect and no partially activated Role becomes visible to later turns.
         """
 
-        enabled = list(self.base_tools or tuple(self.tools))
+        # ``base_tools`` is the Runtime-owned default projection. An empty
+        # default set is valid; falling back to ``self.tools`` would retain a
+        # prior Role's tools across a switch.
+        enabled = list(self.base_tools)
         for name in tool_names:
             tool = self.role_tool_catalog.get(name)
             if tool is None:
@@ -178,7 +181,7 @@ class TaskRuntime:
         if self.active_role is None:
             return
         previous = self._role_snapshot()
-        self._apply_role_state(None, list(self.base_tools or tuple(self.tools)), rollback=previous)
+        self._apply_role_state(None, list(self.base_tools), rollback=previous)
         if self.session_sink is not None:
             self.session_sink.record("role_cleared", self.agent.session_id, {"role_id": previous.active_role.role_id})
 
