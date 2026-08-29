@@ -371,6 +371,19 @@ class SkillPackage:
         return self.spec
 
 
+@dataclass(frozen=True)
+class RoleRegistration:
+    """Immutable, read-only lifecycle view for one registered Role.
+
+    The view intentionally exposes only the Role definition and lifecycle state.
+    It does not carry Runtime permissions, Tool effects, scheduling controls, or
+    any activation authority.
+    """
+
+    role: RoleSpec
+    status: Literal["active", "disabled"]
+
+
 class RoleRegistry:
     """Runtime-owned Role registration with explicit disable semantics."""
 
@@ -386,25 +399,39 @@ class RoleRegistry:
         self._definitions[definition.id] = definition
 
     def get(self, role_id: str) -> RoleSpec:
-        try:
-            role = self._definitions[role_id]
-        except KeyError as error:
-            raise ValueError(f"unknown role: {role_id}") from error
+        role = self._registered_role(role_id)
         if role_id in self._disabled:
             raise ValueError(f"role is disabled: {role_id}")
         return role
 
     def disable(self, role_id: str) -> None:
-        self.get(role_id)
+        self._registered_role(role_id)
         self._disabled.add(role_id)
 
     def enable(self, role_id: str) -> None:
-        if role_id not in self._definitions:
-            raise ValueError(f"unknown role: {role_id}")
+        self._registered_role(role_id)
         self._disabled.discard(role_id)
 
     def all(self) -> tuple[RoleSpec, ...]:
         return tuple(role for role_id, role in self._definitions.items() if role_id not in self._disabled)
+
+    def registration(self, role_id: str) -> RoleRegistration:
+        """Return lifecycle state for a registered Role, including disabled Roles."""
+
+        role = self._registered_role(role_id)
+        status: Literal["active", "disabled"] = "disabled" if role_id in self._disabled else "active"
+        return RoleRegistration(role=role, status=status)
+
+    def registrations(self) -> tuple[RoleRegistration, ...]:
+        """Return every registered Role in registration order as read-only views."""
+
+        return tuple(self.registration(role_id) for role_id in self._definitions)
+
+    def _registered_role(self, role_id: str) -> RoleSpec:
+        try:
+            return self._definitions[role_id]
+        except KeyError as error:
+            raise ValueError(f"unknown role: {role_id}") from error
 
 
 class SkillRegistry:

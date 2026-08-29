@@ -7,6 +7,7 @@ import pytest
 from techpilot.runtime import (
     ArtifactRequirement,
     PayloadContract,
+    RoleRegistration,
     RoleRegistry,
     RoleSkillActivator,
     RoleSpec,
@@ -140,6 +141,53 @@ def test_activation_rejects_disabled_unapproved_and_tool_overreach(tmp_path: Pat
     roles.disable(role.id)
     with pytest.raises(ValueError, match="role is disabled"):
         activator.activate(runtime, role_id=role.id, role_context="incident")
+
+
+def test_role_registry_exposes_immutable_lifecycle_views_without_changing_activation_lookup() -> None:
+    incident = _incident_role()
+    audit = RoleSpec(
+        id="audit-review",
+        title="Audit review",
+        system_prompt="Review supplied evidence.",
+        version="1.0.0",
+        task_boundary="Summarize evidence without changing state.",
+    )
+    roles = RoleRegistry((incident, audit))
+
+    assert roles.registrations() == (
+        RoleRegistration(role=incident, status="active"),
+        RoleRegistration(role=audit, status="active"),
+    )
+    assert roles.all() == (incident, audit)
+
+    roles.disable(incident.id)
+    roles.disable(incident.id)
+
+    assert roles.registration(incident.id) == RoleRegistration(role=incident, status="disabled")
+    assert roles.registrations() == (
+        RoleRegistration(role=incident, status="disabled"),
+        RoleRegistration(role=audit, status="active"),
+    )
+    assert roles.all() == (audit,)
+    with pytest.raises(ValueError, match="role is disabled"):
+        roles.get(incident.id)
+
+    roles.enable(incident.id)
+    roles.enable(incident.id)
+
+    assert roles.registration(incident.id) == RoleRegistration(role=incident, status="active")
+    assert roles.get(incident.id) is incident
+
+
+def test_role_registry_rejects_unknown_lifecycle_queries_and_duplicate_registration() -> None:
+    role = _incident_role()
+    roles = RoleRegistry((role,))
+
+    with pytest.raises(ValueError, match="role is already registered"):
+        roles.register(role)
+    for action in (roles.registration, roles.disable, roles.enable):
+        with pytest.raises(ValueError, match="unknown role: missing-role"):
+            action("missing-role")
 
 
 def test_skill_contract_cannot_declare_runtime_safety_authority() -> None:
