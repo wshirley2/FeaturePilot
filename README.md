@@ -1,27 +1,22 @@
 # TechPilot
 
-TechPilot 是一个在终端里使用的代码助手。给它一个本地仓库，它可以阅读代码、查找入口、解释项目、修改文件并运行测试。
+TechPilot 是一个面向本地开发工作流的终端 Agent。
 
-它不追求“收到一句话就埋头改完”，而是让过程保持可见：你可以直接在对话中阅读、修改和验证代码；写文件前会展示 Diff，任务结束后也能检查结果。
+它提供交互式 TUI、工具调用、权限控制、会话管理和上下文处理等基础能力，内置 Coding Agent 作为示例。你可以直接使用它完成开发任务，也可以基于这些能力继续设计和运行自己的 Agent 工作流。
 
-目前是 `0.1.0`，适合本地开发、功能演示和 Coding Agent 工程实践，还不是系统级安全沙箱。
+## TechPilot 包含以下：
+
+- Runtime 负责调用工具、维护状态和处理执行过程；
+- Session 与 Context 负责保存任务过程中的会话和必要信息；
+- 通过权限和用户确认机制控制任务执行边界；
+- 通过组合 Role、Skill 与工具，可以构建自己的 Agent 工作流。
+
 
 ## 快速开始
 
 需要 Python 3.10 或更高版本。下面以 PowerShell 为例：
 
-### 快速体验
-
-当前尚未发布到 PyPI，使用 pipx 从 GitHub 安装即可：
-
-```powershell
-pipx install "git+https://github.com/wshirley2/TechPilot.git"
-techpilot
-```
-
-首次启动会进入 Provider 配置向导。项目正式发布到 PyPI 后，安装地址可简化为 `pipx install techpilot`。
-
-### 从源码安装与开发
+### 从源码安装与开发（当前推荐）
 
 ```powershell
 git clone https://github.com/wshirley2/TechPilot.git
@@ -62,13 +57,7 @@ TECHPILOT_MODEL=deepseek-v4-flash
 `deepseek-v4-flash` 或 `deepseek-v4-pro`；也可以通过 `--api-key`、`--base-url`
 和 `-m` 临时覆盖这些配置。
 
-安装成功后，直接把仓库路径交给它：
-
-```powershell
-techpilot benchmarks\cli_data_tool
-```
-
-`benchmarks\cli_data_tool` 是项目自带的小型 Python 示例仓库，适合第一次体验。分析自己的项目时，换成对应路径即可：
+安装成功后，直接把本地仓库路径交给它：
 
 ```powershell
 techpilot D:\path\to\your-project
@@ -93,10 +82,6 @@ Session 默认保存在目标仓库的 `.techpilot/sessions/` 下；可以用 `-
 读取、搜索和常规测试通常可以直接执行；写文件、安装依赖、网络访问和命令执行会经过权限确认。删除、仓库外写入和破坏性 Git 操作会被阻止。TechPilot 提供的是交互和执行策略，不是系统级沙箱。
 
 更多参数可通过 `techpilot --help` 或各子命令的 `--help` 查看。
-
-## 当前边界
-
-当前产品不包含 Web、多用户协作、MCP 平台、Role/Skill 平台或系统级沙箱。C5 已完成第一版：模型完整返回一轮 Tool Call 后，安全且资源明确的读取可并发；写入、Bash、网络、委派和未知工具仍串行。Plan、Workspace 和 Managed Run 是显式高级命令，不会自动介入普通 Chat。
 
 ## 来源与许可
 
