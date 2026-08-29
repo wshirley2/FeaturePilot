@@ -9,10 +9,13 @@ import pytest
 from techpilot.evaluation import (
     CORE_V0_CASE_COUNT,
     CORE_V0_CASE_SET_DIGEST,
+    HOLDOUT_SCHEMA_VERSION,
+    HOLDOUT_SUITE,
     RUNNER_VALIDATION_CASE_COUNT,
     BaselineReference,
     ExtendedCaseProvenance,
     ExtendedCaseSource,
+    HoldoutFormatError,
     ModelEvaluationManifest,
     ReplayCase,
     ReplayCaseOrigin,
@@ -21,7 +24,13 @@ from techpilot.evaluation import (
     build_core_v0_cases,
     build_runner_validation_cases,
     case_set_digest,
+    holdout_case_set_metadata,
+    inspect_holdout_case_schema,
+    load_holdout_suite,
+    run_holdout,
+    write_holdout_summary,
 )
+from techpilot.evaluation.__main__ import main as evaluation_main
 
 
 def test_core_v0_has_144_unique_cases_with_separate_runtime_categories() -> None:
@@ -187,3 +196,140 @@ def test_model_manifest_carries_conditions_but_never_a_fake_score() -> None:
             suite="model-core-v0",
             case_set_digest="a" * 64,
         )
+
+
+def test_private_holdout_loader_validates_integrity_and_writes_only_a_redacted_summary(tmp_path: Path) -> None:
+    case = ReplayCase(
+        id="holdout-tool-success-001",
+        suite=HOLDOUT_SUITE,
+        category=ReplayCategory.TOOL,
+        scenario="agent-tool-turn",
+        input={"mode": "success", "value": "private-marker", "provider_response": "done"},
+        expected={"response": "done", "tool_result": "echo:private-marker"},
+        origin=ReplayCaseOrigin.HOLDOUT,
+        description="Synthetic stand-in; no external holdout content is used in this test.",
+    )
+    root = tmp_path / "private-holdout"
+    root.mkdir()
+    (root / "reports").mkdir()
+    (root / "cases.jsonl").write_text(json.dumps(case.to_dict()) + "\n", encoding="utf-8")
+    (root / "manifest.json").write_text(json.dumps({
+        "suite": HOLDOUT_SUITE,
+        "schema_version": HOLDOUT_SCHEMA_VERSION,
+        "case_count": 1,
+        "case_set_digest": case_set_digest((case,)),
+    }), encoding="utf-8")
+
+    loaded = load_holdout_suite(root)
+    summary = run_holdout(root, ReplayRunner(Path(__file__).parents[2]))
+    output = write_holdout_summary(summary, root / "reports" / "summary.json")
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert loaded.cases == (case,)
+    assert summary.passed == summary.total == 1
+    assert summary.failed_case_ids == ()
+    assert payload["kind"] == "holdout-summary-v0"
+    assert payload["failed_case_ids"] == []
+    assert "outcomes" not in payload
+    assert "observed" not in payload
+    assert "private-marker" not in output.read_text(encoding="utf-8")
+
+
+def test_private_holdout_rejects_a_changed_or_non_holdout_case_deck(tmp_path: Path) -> None:
+    root = tmp_path / "private-holdout"
+    root.mkdir()
+    case = ReplayCase(
+        id="holdout-tool-success-001",
+        suite=HOLDOUT_SUITE,
+        category=ReplayCategory.TOOL,
+        scenario="agent-tool-turn",
+        input={"mode": "success", "value": "marker", "provider_response": "done"},
+        expected={"response": "done", "tool_result": "echo:marker"},
+        origin=ReplayCaseOrigin.HOLDOUT,
+    )
+    altered = case.to_dict() | {"origin": ReplayCaseOrigin.CORE.value}
+    (root / "cases.jsonl").write_text(json.dumps(altered) + "\n", encoding="utf-8")
+    (root / "manifest.json").write_text(json.dumps({
+        "suite": HOLDOUT_SUITE,
+        "schema_version": HOLDOUT_SCHEMA_VERSION,
+        "case_count": 1,
+        "case_set_digest": case_set_digest((case,)),
+    }), encoding="utf-8")
+
+    with pytest.raises(HoldoutFormatError, match="invalid holdout case at line 1"):
+        load_holdout_suite(root)
+
+
+def test_private_holdout_manifest_errors_expose_only_safe_structure_details(tmp_path: Path) -> None:
+    root = tmp_path / "private-holdout"
+    root.mkdir()
+
+    with pytest.raises(HoldoutFormatError, match="manifest.json is missing"):
+        load_holdout_suite(root)
+
+    (root / "manifest.json").write_text(json.dumps({"suite": HOLDOUT_SUITE}), encoding="utf-8")
+    with pytest.raises(HoldoutFormatError, match="missing required fields: schema_version, case_count, case_set_digest"):
+        load_holdout_suite(root)
+
+
+def test_private_holdout_case_set_metadata_exposes_only_count_and_digest(tmp_path: Path) -> None:
+    case = ReplayCase(
+        id="holdout-tool-success-001",
+        suite=HOLDOUT_SUITE,
+        category=ReplayCategory.TOOL,
+        scenario="agent-tool-turn",
+        input={"mode": "success", "value": "private-marker", "provider_response": "done"},
+        expected={"response": "done", "tool_result": "echo:private-marker"},
+        origin=ReplayCaseOrigin.HOLDOUT,
+    )
+    root = tmp_path / "private-holdout"
+    root.mkdir()
+    (root / "cases.jsonl").write_text(json.dumps(case.to_dict()) + "\n", encoding="utf-8")
+
+    assert holdout_case_set_metadata(root) == (1, case_set_digest((case,)))
+
+
+def test_private_holdout_schema_inspection_exposes_field_names_without_values(tmp_path: Path) -> None:
+    root = tmp_path / "private-holdout"
+    root.mkdir()
+    (root / "cases.jsonl").write_text(json.dumps({
+        "opaque_id": "private-marker",
+        "assertions": ["private expected output"],
+    }) + "\n", encoding="utf-8")
+
+    schema = inspect_holdout_case_schema(root)
+
+    assert schema.case_count == 1
+    assert schema.fields == ("assertions", "opaque_id")
+    assert "private-marker" not in repr(schema)
+
+
+def test_private_holdout_cli_prints_only_the_redacted_summary(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    case = ReplayCase(
+        id="holdout-tool-success-001",
+        suite=HOLDOUT_SUITE,
+        category=ReplayCategory.TOOL,
+        scenario="agent-tool-turn",
+        input={"mode": "success", "value": "private-marker", "provider_response": "done"},
+        expected={"response": "done", "tool_result": "echo:private-marker"},
+        origin=ReplayCaseOrigin.HOLDOUT,
+    )
+    root = tmp_path / "private-holdout"
+    root.mkdir()
+    (root / "cases.jsonl").write_text(json.dumps(case.to_dict()) + "\n", encoding="utf-8")
+    (root / "manifest.json").write_text(json.dumps({
+        "suite": HOLDOUT_SUITE,
+        "schema_version": HOLDOUT_SCHEMA_VERSION,
+        "case_count": 1,
+        "case_set_digest": case_set_digest((case,)),
+    }), encoding="utf-8")
+
+    assert evaluation_main(["--holdout-root", str(root)]) == 0
+
+    rendered = capsys.readouterr().out
+    reports = list((root / "reports").glob("*.json"))
+    assert "holdout-v0: 1/1 passed" in rendered
+    assert "failed_case_ids: none" in rendered
+    assert "private-marker" not in rendered
+    assert len(reports) == 1
+    assert "private-marker" not in reports[0].read_text(encoding="utf-8")
