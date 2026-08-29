@@ -180,6 +180,9 @@ class LearningTask(LearningModel):
     title: str
     status: Literal["pending", "active", "completed", "skipped"] = "pending"
     estimated_minutes: int | None = Field(default=None, ge=1)
+    source_ids: tuple[str, ...] = ()
+    practice: str | None = None
+    acceptance_criteria: tuple[str, ...] = ()
 
     @field_validator("id", "plan_id", "step_id")
     @classmethod
@@ -192,11 +195,27 @@ class LearningTask(LearningModel):
     def _validate_title(cls, value: str) -> str:
         return _non_empty(value, "learning task title")
 
+    @field_validator("source_ids")
+    @classmethod
+    def _validate_source_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(values) != len(set(values)):
+            raise ValueError("learning task source ids must not contain duplicates")
+        for value in values:
+            _validate_record_id(value)
+        return values
+
 
 class SourceRecord(LearningModel):
     id: str = Field(default_factory=_new_id)
     uri: str
     title: str
+    goal_id: str | None = None
+    source_type: Literal["web", "github", "document"] = "web"
+    content_type: str | None = None
+    content_hash: str | None = None
+    summary: str | None = None
+    version: str | None = None
+    published_at: str | None = None
     retrieved_at: str = Field(default_factory=_utc_now)
     uncertainty: str | None = None
 
@@ -204,6 +223,13 @@ class SourceRecord(LearningModel):
     @classmethod
     def _validate_id(cls, value: str) -> str:
         _validate_record_id(value)
+        return value
+
+    @field_validator("goal_id")
+    @classmethod
+    def _validate_goal_id(cls, value: str | None) -> str | None:
+        if value is not None:
+            _validate_record_id(value)
         return value
 
     @field_validator("uri", "title")
@@ -218,6 +244,9 @@ class TrendBrief(LearningModel):
     category: Literal["must-learn", "recommended", "watchlist"]
     title: str
     source_ids: tuple[str, ...] = ()
+    rationale: str | None = None
+    valid_as_of: str | None = None
+    skip_if: str | None = None
     reviewed_at: str = Field(default_factory=_utc_now)
 
     @field_validator("id", "goal_id")
@@ -231,18 +260,35 @@ class TrendBrief(LearningModel):
     def _validate_title(cls, value: str) -> str:
         return _non_empty(value, "trend brief title")
 
+    @field_validator("source_ids")
+    @classmethod
+    def _validate_source_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(values) != len(set(values)):
+            raise ValueError("trend brief source ids must not contain duplicates")
+        for value in values:
+            _validate_record_id(value)
+        return values
+
 
 class DocumentRecord(LearningModel):
     id: str = Field(default_factory=_new_id)
     filename: str
     mime_type: str
     content_hash: str
+    goal_id: str | None = None
     extraction_status: Literal["pending", "extracted", "unsupported", "failed"] = "pending"
 
     @field_validator("id")
     @classmethod
     def _validate_id(cls, value: str) -> str:
         _validate_record_id(value)
+        return value
+
+    @field_validator("goal_id")
+    @classmethod
+    def _validate_goal_id(cls, value: str | None) -> str | None:
+        if value is not None:
+            _validate_record_id(value)
         return value
 
     @field_validator("filename", "mime_type", "content_hash")

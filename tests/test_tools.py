@@ -7,8 +7,11 @@ from types import SimpleNamespace
 from techpilot.engine.tools import ALL_TOOLS, get_tool
 
 
-def test_tool_count():
-    assert len(ALL_TOOLS) == 9
+def test_tool_registry_contains_core_and_role_gated_research_tools():
+    assert {tool.name for tool in ALL_TOOLS} == {
+        "agent", "bash", "edit_file", "fetch_url", "glob", "grep", "now",
+        "read_file", "research_document", "research_url", "write_file",
+    }
 
 
 def test_all_tools_have_valid_schema():

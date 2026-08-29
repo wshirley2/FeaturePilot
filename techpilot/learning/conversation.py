@@ -121,12 +121,20 @@ class LearningConversationController:
 
     @staticmethod
     def should_route(message: str) -> bool:
-        return _might_be_learning_intent(message)
+        return _might_be_learning_intent(message) or _contains_source_reference(message)
 
     def prepare(self, runtime: TaskRuntime, message: str) -> LearningTurn:
         if self._pending is not None:
             return LearningTurn(notice="请先使用 1、2、3 或上下方向键完成当前选择。")
         active = self.service.active_goal()
+        if active is not None and _contains_source_reference(message):
+            plan = self.service.plan_for(active)
+            activation = self.role_runtime.activate(runtime, active, plan)
+            return LearningTurn(
+                user_input=message,
+                notice=f"{activation}\n\n已识别到学习资料，正在查阅并记录来源…",
+                stage="正在查阅资料…",
+            )
         if not _might_be_learning_intent(message):
             runtime.clear_role()
             return LearningTurn(user_input=message)
@@ -241,6 +249,18 @@ def _might_be_learning_intent(message: str) -> bool:
         "学习", "我想学", "想学", "帮我学", "带我学", "学一下", "复习", "继续学习", "继续之前的学习", "入门", "掌握", "教程", "练习",
     )
     return any(signal in lowered for signal in signals)
+
+
+def _contains_source_reference(message: str) -> bool:
+    """Recognize explicit source hand-offs without treating ordinary chat as research."""
+
+    lowered = message.casefold()
+    return (
+        "http://" in lowered
+        or "https://" in lowered
+        or "github.com/" in lowered
+        or any(signal in lowered for signal in ("读取资料", "研究这个仓库", "整理这个链接", "加入学习资料"))
+    )
 
 
 def _start_notice(goal, plan) -> str:

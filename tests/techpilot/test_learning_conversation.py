@@ -36,10 +36,12 @@ class FakeRuntime:
         self.agent = SimpleNamespace(session_id="learning-runtime", llm=FakeLlm(content))
         self.session_sink = RecordingSink()
         self.activated: list[tuple[str, str]] = []
+        self.tool_names: tuple[str, ...] = ()
         self.cleared = 0
 
-    def activate_role(self, role_id: str, context: str) -> None:
+    def activate_role(self, role_id: str, context: str, *, tool_names: tuple[str, ...] = ()) -> None:
         self.activated.append((role_id, context))
+        self.tool_names = tool_names
 
     def clear_role(self) -> None:
         self.cleared += 1
@@ -62,6 +64,7 @@ def test_learning_role_runtime_activates_the_allowlisted_skill_without_a_second_
     assert runtime.activated[0][0] == "developer-learning-coach"
     assert "# Allowed Skill" in runtime.activated[0][1]
     assert "name: developer-learning" in runtime.activated[0][1]
+    assert runtime.tool_names == ("research_url", "research_document")
 
 
 def test_model_router_returns_only_validated_structured_intent_and_records_no_reasoning(tmp_path):
@@ -172,6 +175,24 @@ def test_quick_introduction_keeps_current_path_and_does_not_activate_learning_ro
     assert resolved.clear_role_after_turn
     assert runtime.activated[0][0] == "quick-technical-introduction"
     assert service.active_goal() == active
+
+
+def test_active_learning_source_reference_reactivates_research_tools_without_router_call(tmp_path):
+    service = LearningService(LearningStore(tmp_path / "learning"))
+    service.confirm(service.draft_from_command("FastAPI"), baseline_notes=None)
+    runtime = FakeRuntime()
+    controller = LearningConversationController(
+        service,
+        router=FixedRouter(LearningRoute("chat")),
+    )
+
+    turn = controller.prepare(runtime, "帮我研究 https://fastapi.tiangolo.com/")
+
+    assert turn.user_input == "帮我研究 https://fastapi.tiangolo.com/"
+    assert turn.stage == "正在查阅资料…"
+    assert turn.notice is not None and "正在查阅并记录来源" in turn.notice
+    assert runtime.activated[0][0] == "developer-learning-coach"
+    assert runtime.tool_names == ("research_url", "research_document")
 
 
 def test_cancelled_goal_is_reviewable_but_never_resumed_by_continue(tmp_path):

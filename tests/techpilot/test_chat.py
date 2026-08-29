@@ -18,6 +18,7 @@ from techpilot.cli import _normalize_command
 from techpilot.engine.events import RuntimeEvent, RuntimeEventType
 from techpilot.engine.llm import LLMResponse, ToolCall
 from techpilot.engine.permissions import PermissionDecision
+from techpilot.learning import LearningRoleRuntime
 from techpilot.runtime import ChatRuntime, RuntimeBootstrap, RuntimeBootstrapInput, TaskRuntime
 from techpilot.runtime.contracts import RuntimeMode
 from techpilot.runtime.sessions import SessionEvent, SessionStore
@@ -442,6 +443,24 @@ def test_runtime_bootstrap_builds_profile_context_and_repository_scoped_agent(tm
         "bash",
         "now",
     }
+
+
+def test_learning_role_exposes_research_tools_only_while_active(tmp_path, monkeypatch):
+    monkeypatch.setenv("TECHPILOT_LOAD_DOTENV", "0")
+    runtime = make_runtime(
+        BENCHMARK_ROOT,
+        FakeProvider([]),
+        Console(file=StringIO(), force_terminal=False, color_system=None),
+        session_directory=tmp_path / "sessions",
+    )
+
+    LearningRoleRuntime().activate(runtime)
+
+    assert {tool.name for tool in runtime.tools} >= {"research_url", "research_document"}
+    assert {tool.name for tool in runtime.agent.tools} == {tool.name for tool in runtime.tools}
+    runtime.clear_role()
+    assert "research_url" not in {tool.name for tool in runtime.tools}
+    assert "research_document" not in {tool.name for tool in runtime.tools}
 
 
 def test_techpilot_model_setting_and_cli_override(tmp_path, monkeypatch):

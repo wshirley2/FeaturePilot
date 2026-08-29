@@ -45,8 +45,11 @@ class LearningRoleRuntime:
             f"{role.system_prompt}\n\n"
             "当前是学习对话，不要修改仓库、运行命令或调用编码工具，除非用户在本轮明确要求代码实践。\n\n"
             "先直接回答用户当前的学习问题；不要要求用户记忆 Slash 命令。只有用户明确希望建立、切换或暂停学习路径时，才讨论状态选择。\n\n"
+            "当用户明确提供 URL、公开 GitHub 仓库链接或工作区资料文件并要求研究、阅读或加入学习时，"
+            "必须调用对应 research 工具；读取失败时如实说明，不能编造来源、版本、热点或任务。\n\n"
             f"{goal_context}\n\n"
             f"# Allowed Skill\n\n{skill_context}",
+            tool_names=("research_url", "research_document"),
         )
         return "✻ Skill 已准备好，开始第 1 步…"
 

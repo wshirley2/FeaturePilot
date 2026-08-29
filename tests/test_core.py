@@ -27,7 +27,10 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    assert len(ALL_TOOLS) == 9
+    assert {tool.name for tool in ALL_TOOLS} == {
+        "agent", "bash", "edit_file", "fetch_url", "glob", "grep", "now",
+        "read_file", "research_document", "research_url", "write_file",
+    }
 
 
 def test_config_from_env(monkeypatch):

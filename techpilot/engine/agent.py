@@ -148,6 +148,16 @@ class Agent:
         self._system_context = system_context
         self._system = self._build_system_prompt()
 
+    def update_tools(self, tools: list[Tool]) -> None:
+        """Replace the model-visible tool set without losing conversation state."""
+
+        self.tools = list(tools)
+        self._tool_by_name = {tool.name: tool for tool in self.tools}
+        for tool in self.tools:
+            if isinstance(tool, AgentTool):
+                tool._parent_agent = self
+        self._system = self._build_system_prompt()
+
     def cancel_current_turn(self, reason: str = "cancelled by user") -> bool:
         """Request cooperative cancellation at the next provider/tool boundary."""
 

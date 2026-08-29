@@ -21,6 +21,7 @@ from .contracts import (
 )
 from .conversation import LearningChoice, LearningConversationController, LearningIntentRouter, LearningRoute, LearningTurn
 from .registry import DEVELOPER_LEARNING_COACH, RoleRegistry, SkillPackage, SkillRegistry
+from .research import DocumentIngestion, FetchedSource, ResearchConnector, ResearchError, ResearchResult, ResearchService
 from .role_runtime import LearningRoleRuntime
 from .service import ConfirmedLearningGoal, LearningGoalDraft, LearningService
 from .store import LearningStore, learning_data_directory
@@ -28,8 +29,10 @@ from .store import LearningStore, learning_data_directory
 __all__ = [
     "DEVELOPER_LEARNING_COACH",
     "ConfirmedLearningGoal",
+    "DocumentIngestion",
     "DocumentRecord",
     "ExtractedText",
+    "FetchedSource",
     "KnowledgeDraft",
     "KnowledgeSync",
     "LearningChoice",
@@ -48,6 +51,10 @@ __all__ = [
     "LearningTask",
     "LearningTurn",
     "QuizAttempt",
+    "ResearchConnector",
+    "ResearchError",
+    "ResearchResult",
+    "ResearchService",
     "RoleDefinition",
     "RoleRegistry",
     "SkillCandidate",

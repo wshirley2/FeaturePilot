@@ -1,6 +1,6 @@
 ---
 name: developer-learning
-description: Use when a developer asks to start, continue, or review a learning path for a programming topic, such as "learn Python async", "study React Hooks", "帮我学 Rust", or "继续之前的学习". Create or continue a learning goal and finite plan; do not use for a one-off factual question, coding task, or topic discussion without learning intent.
+description: Use when a developer asks to start, continue, or review a learning path for a programming topic, such as "learn Python async", "study React Hooks", "帮我学 Rust", or "继续之前的学习". Also use when an active learner explicitly provides a public URL, GitHub repository, or workspace text file and asks to research, read, or add it as learning material. Create or continue a finite plan and record only successfully retrieved sources; do not use for a one-off factual question, coding task, or topic discussion without learning intent.
 ---
 
 # Developer Learning

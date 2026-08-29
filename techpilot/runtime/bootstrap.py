@@ -71,6 +71,8 @@ class TaskRuntime:
     session_sink: SessionEventSink | None = None
     base_system_context: str = ""
     role_context: str | None = None
+    base_tools: tuple[Tool, ...] = ()
+    role_tool_catalog: dict[str, Tool] = field(default_factory=dict)
     recovery_notices: list[str] = field(default_factory=list)
 
     @property
@@ -122,9 +124,24 @@ class TaskRuntime:
             allow_tools=allow_tools,
         )
 
-    def activate_role(self, role_id: str, role_context: str) -> None:
+    def activate_role(
+        self,
+        role_id: str,
+        role_context: str,
+        *,
+        tool_names: tuple[str, ...] = (),
+    ) -> None:
         """Activate a code-owned Role without creating a second Agent Runtime."""
 
+        enabled = list(self.base_tools or tuple(self.tools))
+        for name in tool_names:
+            tool = self.role_tool_catalog.get(name)
+            if tool is None:
+                raise ValueError(f"unknown role tool: {name}")
+            if all(existing.name != name for existing in enabled):
+                enabled.append(tool)
+        self.tools = enabled
+        self.agent.update_tools(enabled)
         self.role_context = role_context
         self._refresh_system_context()
         if self.session_sink is not None:
@@ -135,6 +152,8 @@ class TaskRuntime:
 
         if self.role_context is None:
             return
+        self.tools = list(self.base_tools or tuple(self.tools))
+        self.agent.update_tools(self.tools)
         self.role_context = None
         self._refresh_system_context()
         if self.session_sink is not None:
@@ -356,6 +375,12 @@ class RuntimeBootstrap:
             session_store=session_store,
             session_sink=session_sink,
             base_system_context=base_system_context,
+            base_tools=tuple(tools),
+            role_tool_catalog={
+                name: tool
+                for name in ("research_url", "research_document")
+                if (tool := get_tool(name)) is not None
+            },
         )
         if resume_projection is not None:
             runtime.resume_session(resume_projection.session_id)
