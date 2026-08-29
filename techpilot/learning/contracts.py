@@ -14,6 +14,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from techpilot.runtime.extensions import RoleSpec, SkillSpec
+
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _RECORD_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
@@ -41,66 +43,12 @@ class LearningModel(BaseModel):
         return value
 
 
-class RoleDefinition(LearningModel):
-    """A code-owned Agent App boundary, not a second Runtime."""
-
-    id: str
-    title: str
-    system_prompt: str
-    allowed_skill_ids: tuple[str, ...] = ()
-    artifact_types: tuple[str, ...] = ()
-
-    @field_validator("id")
-    @classmethod
-    def _validate_role_id(cls, value: str) -> str:
-        if not _IDENTIFIER_PATTERN.fullmatch(value):
-            raise ValueError("role id must be lowercase kebab-case")
-        return value
-
-    @field_validator("title", "system_prompt")
-    @classmethod
-    def _validate_non_empty_text(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("role text must not be empty")
-        return normalized
-
-    @field_validator("allowed_skill_ids", "artifact_types")
-    @classmethod
-    def _validate_identifiers(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        if len(values) != len(set(values)):
-            raise ValueError("role identifiers must not contain duplicates")
-        if any(not _IDENTIFIER_PATTERN.fullmatch(value) for value in values):
-            raise ValueError("role identifiers must be lowercase kebab-case")
-        return values
+class RoleDefinition(RoleSpec):
+    """Compatibility alias for the historical developer-learning sample."""
 
 
-class SkillManifest(BaseModel):
-    """Portable public ``SKILL.md`` discovery metadata.
-
-    Only ``name`` and ``description`` are required by the public package
-    shape. Runtime safety metadata is intentionally absent from this model.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    name: str
-    description: str
-
-    @field_validator("name")
-    @classmethod
-    def _validate_name(cls, value: str) -> str:
-        if not _IDENTIFIER_PATTERN.fullmatch(value) or len(value) > 64:
-            raise ValueError("skill name must be at most 64 lowercase kebab-case characters")
-        return value
-
-    @field_validator("description")
-    @classmethod
-    def _validate_description(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized or len(normalized) > 1024:
-            raise ValueError("skill description must be between 1 and 1024 characters")
-        return normalized
+class SkillManifest(SkillSpec):
+    """Compatibility alias for a Runtime-owned portable Skill contract."""
 
 
 class LearningProfile(LearningModel):

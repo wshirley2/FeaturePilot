@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from techpilot.runtime import TaskRuntime
+from techpilot.runtime import RoleSkillActivator, TaskRuntime, ToolAllowlist
 
 from .contracts import LearningGoal, LearningPlan
 from .registry import RoleRegistry, SkillRegistry
@@ -18,6 +18,14 @@ class LearningRoleRuntime:
     ) -> None:
         self.roles = roles or RoleRegistry.with_builtin_roles()
         self.skills = skills or SkillRegistry.with_builtin_skills(self.roles)
+        self.activator = RoleSkillActivator(
+            self.roles,
+            self.skills,
+            (ToolAllowlist(
+                role_id="developer-learning-coach",
+                tool_names=("research_url", "research_document"),
+            ),),
+        )
 
     def activate(
         self,
@@ -39,8 +47,7 @@ class LearningRoleRuntime:
             if plan is not None and plan.goal_id == goal.id and plan.steps:
                 goal_lines.append(f"当前第 1 步：{plan.steps[0].title}")
             goal_context = "\n".join(goal_lines)
-        runtime.activate_role(
-            role.id,
+        context = (
             f"# Active Role: Developer Learning Coach\n\n"
             f"{role.system_prompt}\n\n"
             "当前是学习对话，不要修改仓库、运行命令或调用编码工具，除非用户在本轮明确要求代码实践。\n\n"
@@ -48,8 +55,13 @@ class LearningRoleRuntime:
             "当用户明确提供 URL、公开 GitHub 仓库链接或工作区资料文件并要求研究、阅读或加入学习时，"
             "必须调用对应 research 工具；读取失败时如实说明，不能编造来源、版本、热点或任务。\n\n"
             f"{goal_context}\n\n"
-            f"# Allowed Skill\n\n{skill_context}",
-            tool_names=("research_url", "research_document"),
+            f"# Allowed Skill\n\n{skill_context}"
+        )
+        self.activator.activate(
+            runtime,
+            role_id=role.id,
+            role_context=context,
+            skill_names=tuple(package.spec.name for package in packages),
         )
         return "✻ Skill 已准备好，开始第 1 步…"
 
