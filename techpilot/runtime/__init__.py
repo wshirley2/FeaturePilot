@@ -1,6 +1,6 @@
 """TechPilot 共享 Runtime、契约和 Session 持久化。"""
 
-from .bootstrap import ChatRuntime, RuntimeBootstrap, RuntimeBootstrapInput, TaskRuntime
+from .bootstrap import ActiveRole, ChatRuntime, RuntimeBootstrap, RuntimeBootstrapInput, TaskRuntime
 from .contracts import (
     RuntimeMode,
     RuntimeResultScope,
@@ -31,6 +31,7 @@ from .extensions import (
 
 __all__ = [
     "RUNTIME_ROLE_API_VERSION",
+    "ActiveRole",
     "ArtifactRequirement",
     "ChatRuntime",
     "EvaluationInterface",

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -55,6 +56,21 @@ class RuntimeBootstrapInput:
     paths: TaskRuntimePaths | None = None
 
 
+@dataclass(frozen=True)
+class ActiveRole:
+    """The Runtime-owned identity of the Role currently affecting a Chat."""
+
+    role_id: str
+    context: str
+    tool_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _RoleRuntimeSnapshot:
+    active_role: ActiveRole | None
+    tools: tuple[Tool, ...]
+
+
 @dataclass
 class TaskRuntime:
     identity: TaskRuntimeIdentity
@@ -71,6 +87,7 @@ class TaskRuntime:
     session_sink: SessionEventSink | None = None
     base_system_context: str = ""
     role_context: str | None = None
+    active_role: ActiveRole | None = None
     base_tools: tuple[Tool, ...] = ()
     role_tool_catalog: dict[str, Tool] = field(default_factory=dict)
     recovery_notices: list[str] = field(default_factory=list)
@@ -131,7 +148,12 @@ class TaskRuntime:
         *,
         tool_names: tuple[str, ...] = (),
     ) -> None:
-        """Activate a code-owned Role without creating a second Agent Runtime."""
+        """Activate a code-owned Role without creating a second Agent Runtime.
+
+        Tool and system-context updates are applied as one Runtime transition.
+        If either Agent update fails, the previously active Role remains in
+        effect and no partially activated Role becomes visible to later turns.
+        """
 
         enabled = list(self.base_tools or tuple(self.tools))
         for name in tool_names:
@@ -140,28 +162,94 @@ class TaskRuntime:
                 raise ValueError(f"unknown role tool: {name}")
             if all(existing.name != name for existing in enabled):
                 enabled.append(tool)
-        self.tools = enabled
-        self.agent.update_tools(enabled)
-        self.role_context = role_context
-        self._refresh_system_context()
+        next_role = ActiveRole(role_id=role_id, context=role_context, tool_names=tool_names)
+        previous = self._role_snapshot()
+        self._apply_role_state(next_role, enabled, rollback=previous)
         if self.session_sink is not None:
-            self.session_sink.record("role_activated", self.agent.session_id, {"role_id": role_id})
+            self.session_sink.record(
+                "role_activated",
+                self.agent.session_id,
+                {"role_id": role_id, "tool_names": list(tool_names)},
+            )
 
     def clear_role(self) -> None:
         """Return subsequent turns to the default Runtime role."""
 
-        if self.role_context is None:
+        if self.active_role is None:
             return
-        self.tools = list(self.base_tools or tuple(self.tools))
-        self.agent.update_tools(self.tools)
-        self.role_context = None
-        self._refresh_system_context()
+        previous = self._role_snapshot()
+        self._apply_role_state(None, list(self.base_tools or tuple(self.tools)), rollback=previous)
         if self.session_sink is not None:
-            self.session_sink.record("role_cleared", self.agent.session_id)
+            self.session_sink.record("role_cleared", self.agent.session_id, {"role_id": previous.active_role.role_id})
+
+    @contextmanager
+    def role_scope(
+        self,
+        role_id: str,
+        role_context: str,
+        *,
+        tool_names: tuple[str, ...] = (),
+    ) -> Iterator[ActiveRole]:
+        """Temporarily activate a Role and always restore the prior Runtime state."""
+
+        previous = self._role_snapshot()
+        self.activate_role(role_id, role_context, tool_names=tool_names)
+        try:
+            if self.active_role is None:  # Defensive: activation must have created this state.
+                raise RuntimeError("Role activation did not establish an active Role")
+            yield self.active_role
+        finally:
+            self._restore_role_snapshot(previous)
+
+    def _role_snapshot(self) -> _RoleRuntimeSnapshot:
+        return _RoleRuntimeSnapshot(active_role=self.active_role, tools=tuple(self.tools))
+
+    def _restore_role_snapshot(self, previous: _RoleRuntimeSnapshot) -> None:
+        if previous.active_role is None:
+            self.clear_role()
+            return
+        self.activate_role(
+            previous.active_role.role_id,
+            previous.active_role.context,
+            tool_names=previous.active_role.tool_names,
+        )
+
+    def _apply_role_state(
+        self,
+        active_role: ActiveRole | None,
+        tools: list[Tool],
+        *,
+        rollback: _RoleRuntimeSnapshot,
+    ) -> None:
+        role_context = active_role.context if active_role is not None else None
+        system_context = self._system_context(role_context)
+        try:
+            self.agent.update_tools(tools)
+            self.agent.update_system_context(system_context)
+        except Exception:
+            self._restore_agent_role_state(rollback)
+            raise
+        self.tools = list(tools)
+        self.role_context = role_context
+        self.active_role = active_role
+
+    def _restore_agent_role_state(self, previous: _RoleRuntimeSnapshot) -> None:
+        previous_context = previous.active_role.context if previous.active_role is not None else None
+        try:
+            self.agent.update_tools(list(previous.tools))
+            self.agent.update_system_context(self._system_context(previous_context))
+        except Exception:
+            # Preserve the original activation error. The Runtime fields still
+            # describe the last fully established state; the next explicit
+            # transition can retry the Agent projection.
+            pass
 
     def _refresh_system_context(self) -> None:
-        context = "\n\n".join(part for part in (self.base_system_context, self.role_context) if part)
-        self.agent.update_system_context(_with_runtime_identity(context, self.mode, self.config.model))
+        self.agent.update_system_context(self._system_context(self.role_context))
+
+    def _system_context(self, role_context: str | None) -> str:
+        context = "\n\n".join(part for part in (self.base_system_context, role_context) if part)
+        return _with_runtime_identity(context, self.mode, self.config.model)
 
     def consume_recovery_notices(self) -> list[str]:
         """Return compatibility notices that must be shown after Session recovery."""
@@ -227,6 +315,12 @@ class TaskRuntime:
             self.recovery_notices.append(notice)
             self.agent.messages.append({"role": "system", "content": notice})
             projection.warnings.append("旧版待隔离操作已冻结；当前 Chat 不会自动执行。")
+        recovered_role_id = _last_active_role_id(projection)
+        if recovered_role_id is not None:
+            notice = f"发现历史 Role 激活记录（{recovered_role_id}）；当前版本不会自动恢复 Role、工具或历史授权。"
+            self.recovery_notices.append(notice)
+            self.agent.messages.append({"role": "system", "content": notice})
+            projection.warnings.append("历史 Role 已保持关闭；当前 Chat 使用默认 Coding 状态。")
         if self.session_sink is not None:
             self.session_sink.last_result = projection.last_result
             self.session_sink.record("session_resumed", projection.session_id, {
@@ -239,6 +333,20 @@ class TaskRuntime:
 
 # Compatibility alias for integrations written before the unified Task Runtime contract.
 ChatRuntime = TaskRuntime
+
+
+def _last_active_role_id(projection: SessionProjection) -> str | None:
+    """Read lifecycle facts without turning historical Role state back on."""
+
+    role_id: str | None = None
+    for event in projection.events:
+        if event.event_type == "role_activated":
+            candidate = event.payload.get("role_id")
+            if isinstance(candidate, str):
+                role_id = candidate
+        elif event.event_type == "role_cleared":
+            role_id = None
+    return role_id
 
 
 class RuntimeBootstrap:
