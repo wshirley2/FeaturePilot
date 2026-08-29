@@ -10,14 +10,17 @@ from .contracts import (
     TaskRuntimeResult,
 )
 from .extensions import (
+    RUNTIME_ROLE_API_VERSION,
     ArtifactRequirement,
     EvaluationInterface,
     PayloadContract,
     RoleActivation,
+    RoleHostConfiguration,
     RoleRegistration,
     RoleRegistry,
     RoleSkillActivator,
     RoleSpec,
+    RuntimeCompatibility,
     SkillPackage,
     SkillRegistry,
     SkillSpec,
@@ -27,17 +30,20 @@ from .extensions import (
 )
 
 __all__ = [
+    "RUNTIME_ROLE_API_VERSION",
     "ArtifactRequirement",
     "ChatRuntime",
     "EvaluationInterface",
     "PayloadContract",
     "RoleActivation",
+    "RoleHostConfiguration",
     "RoleRegistration",
     "RoleRegistry",
     "RoleSkillActivator",
     "RoleSpec",
     "RuntimeBootstrap",
     "RuntimeBootstrapInput",
+    "RuntimeCompatibility",
     "RuntimeMode",
     "RuntimeResultScope",
     "RuntimeResultStatus",

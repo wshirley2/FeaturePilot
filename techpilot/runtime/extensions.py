@@ -19,11 +19,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 _IDENTIFIER = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+][A-Za-z0-9.-]+)?$")
+_STABLE_SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 _FRONTMATTER_BOUNDARY = "---"
 _FORBIDDEN_SKILL_FIELDS = frozenset({
     "effect", "effects", "concurrency", "permission", "permissions",
     "resource", "resources", "tool", "tools", "allowed_tools",
 })
+RUNTIME_ROLE_API_VERSION = "1.0.0"
 
 
 def _identifier(value: str, label: str) -> str:
@@ -38,6 +40,18 @@ def _text(value: str, label: str) -> str:
     if not normalized:
         raise ValueError(f"{label} must not be empty")
     return normalized
+
+
+def _stable_semver(value: str, label: str) -> str:
+    normalized = value.strip()
+    if not _STABLE_SEMVER.fullmatch(normalized):
+        raise ValueError(f"{label} must be a stable semantic-version formatted value")
+    return normalized
+
+
+def _semver_key(value: str) -> tuple[int, int, int]:
+    major, minor, patch = value.split(".")
+    return int(major), int(minor), int(patch)
 
 
 class PayloadContract(BaseModel):
@@ -124,6 +138,64 @@ class EvaluationInterface(BaseModel):
         return value
 
 
+class RuntimeCompatibility(BaseModel):
+    """A Role's declared compatibility with the host-owned extension API."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    minimum_api_version: str = RUNTIME_ROLE_API_VERSION
+    maximum_api_version: str | None = None
+
+    @field_validator("minimum_api_version")
+    @classmethod
+    def _validate_minimum_api_version(cls, value: str) -> str:
+        return _stable_semver(value, "minimum Runtime API version")
+
+    @field_validator("maximum_api_version")
+    @classmethod
+    def _validate_maximum_api_version(cls, value: str | None) -> str | None:
+        return _stable_semver(value, "maximum Runtime API version") if value is not None else None
+
+    @model_validator(mode="after")
+    def _validate_version_range(self) -> RuntimeCompatibility:
+        if self.maximum_api_version is not None and _semver_key(self.minimum_api_version) >= _semver_key(
+            self.maximum_api_version
+        ):
+            raise ValueError("maximum Runtime API version must be greater than minimum Runtime API version")
+        return self
+
+    def supports(self, runtime_api_version: str) -> bool:
+        """Return whether a stable host API version falls inside this declaration."""
+
+        version = _stable_semver(runtime_api_version, "Runtime API version")
+        version_key = _semver_key(version)
+        if version_key < _semver_key(self.minimum_api_version):
+            return False
+        return self.maximum_api_version is None or version_key < _semver_key(self.maximum_api_version)
+
+
+class RoleHostConfiguration(BaseModel):
+    """Configuration supplied and retained by the host, never by a Role package."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role_id: str
+    values: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("role_id")
+    @classmethod
+    def _validate_role_id(cls, value: str) -> str:
+        return _identifier(value, "host configuration role id")
+
+    def validate_for(self, role: RoleSpec) -> dict[str, Any]:
+        if self.role_id != role.id:
+            raise ValueError(f"host configuration belongs to role {self.role_id}, not {role.id}")
+        return role.host_configuration_contract.validate_payload(
+            self.values,
+            label=f"role {role.id} host configuration",
+        )
+
+
 class RoleSpec(BaseModel):
     """A code-owned task boundary that reuses the single Task Runtime."""
 
@@ -140,6 +212,8 @@ class RoleSpec(BaseModel):
     artifact_requirements: tuple[ArtifactRequirement, ...] = ()
     input_contract: PayloadContract = Field(default_factory=PayloadContract)
     output_contract: PayloadContract = Field(default_factory=PayloadContract)
+    runtime_compatibility: RuntimeCompatibility = Field(default_factory=RuntimeCompatibility)
+    host_configuration_contract: PayloadContract = Field(default_factory=PayloadContract)
     evaluator: EvaluationInterface | None = None
 
     @field_validator("id")
@@ -196,6 +270,9 @@ class RoleSpec(BaseModel):
 
     def validate_output(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self.output_contract.validate_payload(payload, label=f"role {self.id} output")
+
+    def validate_host_configuration(self, configuration: RoleHostConfiguration) -> dict[str, Any]:
+        return configuration.validate_for(self)
 
 
 class SkillSpec(BaseModel):
@@ -387,15 +464,25 @@ class RoleRegistration:
 class RoleRegistry:
     """Runtime-owned Role registration with explicit disable semantics."""
 
-    def __init__(self, definitions: tuple[RoleSpec, ...] = ()) -> None:
+    def __init__(
+        self,
+        definitions: tuple[RoleSpec, ...] = (),
+        *,
+        runtime_api_version: str = RUNTIME_ROLE_API_VERSION,
+    ) -> None:
         self._definitions: dict[str, RoleSpec] = {}
         self._disabled: set[str] = set()
+        self.runtime_api_version = _stable_semver(runtime_api_version, "Runtime API version")
         for definition in definitions:
             self.register(definition)
 
     def register(self, definition: RoleSpec) -> None:
         if definition.id in self._definitions:
             raise ValueError(f"role is already registered: {definition.id}")
+        if not definition.runtime_compatibility.supports(self.runtime_api_version):
+            raise ValueError(
+                f"role is incompatible with Runtime API {self.runtime_api_version}: {definition.id}"
+            )
         self._definitions[definition.id] = definition
 
     def get(self, role_id: str) -> RoleSpec:
@@ -614,10 +701,13 @@ class RoleSkillActivator:
         skill_names: tuple[str, ...] = (),
         tool_requests: tuple[ToolRequest, ...] = (),
         role_input: Mapping[str, Any] | None = None,
+        host_configuration: RoleHostConfiguration | None = None,
     ) -> RoleActivation:
         role = self.roles.get(role_id)
         if role_input is not None:
             role.validate_input(role_input)
+        if host_configuration is not None:
+            role.validate_host_configuration(host_configuration)
         requested = skill_names or role.allowed_skill_ids
         if len(requested) != len(set(requested)):
             raise ValueError("activation skill names must not contain duplicates")

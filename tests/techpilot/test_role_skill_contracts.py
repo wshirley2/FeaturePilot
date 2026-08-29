@@ -7,10 +7,12 @@ import pytest
 from techpilot.runtime import (
     ArtifactRequirement,
     PayloadContract,
+    RoleHostConfiguration,
     RoleRegistration,
     RoleRegistry,
     RoleSkillActivator,
     RoleSpec,
+    RuntimeCompatibility,
     SkillRegistry,
     SkillSpec,
     ToolAllowlist,
@@ -188,6 +190,62 @@ def test_role_registry_rejects_unknown_lifecycle_queries_and_duplicate_registrat
     for action in (roles.registration, roles.disable, roles.enable):
         with pytest.raises(ValueError, match="unknown role: missing-role"):
             action("missing-role")
+
+
+def test_role_registry_rejects_incompatible_runtime_api_versions() -> None:
+    compatible = _incident_role().model_copy(
+        update={"runtime_compatibility": RuntimeCompatibility(minimum_api_version="1.0.0", maximum_api_version="2.0.0")}
+    )
+    assert RoleRegistry((compatible,), runtime_api_version="1.5.0").get(compatible.id) is compatible
+
+    with pytest.raises(ValueError, match="role is incompatible with Runtime API 2.0.0"):
+        RoleRegistry((compatible,), runtime_api_version="2.0.0")
+    with pytest.raises(ValueError, match="stable semantic-version"):
+        RoleRegistry(runtime_api_version="1.0.0-rc.1")
+    with pytest.raises(ValueError, match="greater than minimum"):
+        RuntimeCompatibility(minimum_api_version="1.0.0", maximum_api_version="1.0.0")
+
+
+def test_host_configuration_is_validated_before_activation_and_cannot_change_tool_allowlist(tmp_path: Path) -> None:
+    role = _incident_role().model_copy(
+        update={"host_configuration_contract": PayloadContract(schema_id="incident-config-v1", required_keys=("region",))}
+    )
+    roles = RoleRegistry((role,))
+    skills = SkillRegistry(roles)
+    _write_skill(tmp_path)
+    skills.discover(tmp_path, approved=True)
+    activator = RoleSkillActivator(
+        roles,
+        skills,
+        (ToolAllowlist(role_id=role.id, tool_names=("read_log",)),),
+    )
+    runtime = _RecordingRuntime()
+
+    with pytest.raises(ValueError, match="missing required fields: region"):
+        activator.activate(
+            runtime,
+            role_id=role.id,
+            role_context="incident",
+            host_configuration=RoleHostConfiguration(role_id=role.id),
+        )
+    with pytest.raises(ValueError, match="belongs to role audit-review"):
+        activator.activate(
+            runtime,
+            role_id=role.id,
+            role_context="incident",
+            host_configuration=RoleHostConfiguration(role_id="audit-review", values={"region": "cn"}),
+        )
+    assert runtime.activations == []
+
+    activation = activator.activate(
+        runtime,
+        role_id=role.id,
+        role_context="incident",
+        host_configuration=RoleHostConfiguration(role_id=role.id, values={"region": "cn"}),
+    )
+
+    assert activation.tool_names == ("read_log",)
+    assert runtime.activations == [(role.id, "incident", ("read_log",))]
 
 
 def test_skill_contract_cannot_declare_runtime_safety_authority() -> None:
