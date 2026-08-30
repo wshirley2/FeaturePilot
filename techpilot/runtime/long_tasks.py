@@ -17,8 +17,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from uuid import uuid4
+
+from .sessions import SessionStore
 
 LONG_TASK_SCHEMA_VERSION = 1
 _SAFE_TASK_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -30,6 +32,10 @@ class LongTaskStoreError(OSError):
 
 class LongTaskStateError(ValueError):
     """A requested state transition is unsafe for the current Task state."""
+
+
+class LongTaskLeaseError(LongTaskStateError):
+    """Another process owns the exclusive execution lease for this Task."""
 
 
 class LongTaskStatus(str, Enum):
@@ -143,6 +149,7 @@ class TaskCheckpoint:
 
     checkpoint_id: str
     event_cursor: str | None
+    session_event_cursor: str | None
     message_projection: list[dict[str, Any]]
     completed_effect_ids: tuple[str, ...]
     pending_action_ids: tuple[str, ...]
@@ -184,6 +191,36 @@ class LongTaskProjection:
         return tuple(sorted(action.effect_id for action in self.actions.values() if action.effect_id and action.status is LongTaskActionStatus.STARTED))
 
 
+@dataclass
+class LongTaskLease:
+    """One process-owned OS file lock protecting side-effect starts for a Task."""
+
+    task_id: str
+    owner_id: str
+    _stream: BinaryIO
+    _released: bool = False
+
+    @property
+    def active(self) -> bool:
+        return not self._released and not self._stream.closed
+
+    def release(self) -> None:
+        if self._released:
+            return
+        try:
+            _unlock_file(self._stream)
+        finally:
+            self._stream.close()
+            self._released = True
+
+    def __enter__(self) -> LongTaskLease:  # noqa: PYI034 - Python 3.10 compatibility
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        del exc_type, exc_value, traceback
+        self.release()
+
+
 class LongTaskStore:
     """Append and replay long-task events under ``.techpilot/tasks``.
 
@@ -191,13 +228,23 @@ class LongTaskStore:
     permits an effect start after checking the durable effect ledger.
     """
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(self, directory: Path, *, session_store: SessionStore | None = None) -> None:
         self.directory = directory.resolve()
+        self.session_store = session_store
         self._lock = threading.Lock()
 
     @classmethod
-    def for_repository(cls, repository: Path, directory: Path | None = None) -> LongTaskStore:
-        return cls(directory if directory is not None else repository / ".techpilot" / "tasks")
+    def for_repository(
+        cls,
+        repository: Path,
+        directory: Path | None = None,
+        *,
+        session_directory: Path | None = None,
+    ) -> LongTaskStore:
+        return cls(
+            directory if directory is not None else repository / ".techpilot" / "tasks",
+            session_store=SessionStore.for_repository(repository, session_directory),
+        )
 
     def create(
         self,
@@ -272,6 +319,7 @@ class LongTaskStore:
         *,
         message_projection: list[dict[str, Any]],
         recovery_reason: str,
+        session_event_cursor: str,
         checkpoint_id: str | None = None,
     ) -> TaskCheckpoint:
         projection = self.replay(task_id)
@@ -281,6 +329,7 @@ class LongTaskStore:
             raise ValueError("Checkpoint recovery reason cannot be empty")
         if not _is_message_projection(message_projection):
             raise TypeError("Checkpoint message projection must be a list of objects")
+        safe_session_cursor = self._validate_session_cursor(projection, session_event_cursor)
         safe_checkpoint_id = self._normalize_id(checkpoint_id or uuid4().hex, "checkpoint id")
         cursor = projection.events[-1].event_id if projection.events else None
         self.append(LongTaskEvent(
@@ -289,6 +338,7 @@ class LongTaskStore:
             payload={
                 "checkpoint_id": safe_checkpoint_id,
                 "event_cursor": cursor,
+                "session_event_cursor": safe_session_cursor,
                 "message_projection": copy.deepcopy(message_projection),
                 "completed_effect_ids": list(projection.completed_effect_ids),
                 "pending_action_ids": list(projection.pending_action_ids),
@@ -298,6 +348,32 @@ class LongTaskStore:
             },
         ))
         return self.replay(projection.task_id).checkpoints[-1]
+
+    def acquire_lease(self, task_id: str, *, owner_id: str | None = None) -> LongTaskLease:
+        """Acquire the single-process execution lease for one existing Task.
+
+        The OS owns release-on-crash behavior.  No historical lease record is
+        trusted for recovery because a dead process cannot append its release.
+        """
+
+        projection = self.replay(task_id)
+        if projection.status in {LongTaskStatus.CANCELLED, LongTaskStatus.SUCCEEDED, LongTaskStatus.FAILED}:
+            raise LongTaskLeaseError(f"Cannot lease terminal Task: {projection.status.value}")
+        lease_path = self._lease_path(projection.task_id)
+        stream: BinaryIO | None = None
+        try:
+            lease_path.parent.mkdir(parents=True, exist_ok=True)
+            stream = lease_path.open("a+b")
+            _lock_file(stream)
+        except OSError as error:
+            if stream is not None:
+                stream.close()
+            raise LongTaskLeaseError(f"Task is already running: {projection.task_id}") from error
+        return LongTaskLease(
+            task_id=projection.task_id,
+            owner_id=self._normalize_id(owner_id or uuid4().hex, "lease owner id"),
+            _stream=stream,
+        )
 
     def pause(self, task_id: str, *, reason: str) -> LongTaskProjection:
         projection = self.replay(task_id)
@@ -393,7 +469,8 @@ class LongTaskStore:
             return EffectDisposition.BLOCKED_LIMIT
         return EffectDisposition.EXECUTE
 
-    def start_effect(self, task_id: str, action_id: str) -> LongTaskProjection:
+    def start_effect(self, task_id: str, action_id: str, *, lease: LongTaskLease) -> LongTaskProjection:
+        self._require_active_lease(task_id, lease)
         disposition = self.effect_disposition(task_id, action_id)
         if disposition is not EffectDisposition.EXECUTE:
             raise LongTaskStateError(f"Effect cannot start: {disposition.value}")
@@ -445,6 +522,9 @@ class LongTaskStore:
         if any(warning.startswith("Ignored invalid long Task event") for warning in warnings):
             projection.recovery_blockers.append("event_log_invalid")
             projection.status = LongTaskStatus.RECOVERY_REQUIRED
+        if any(checkpoint.session_event_cursor is None for checkpoint in projection.checkpoints):
+            projection.recovery_blockers.append("checkpoint_session_cursor_missing")
+            projection.status = LongTaskStatus.RECOVERY_REQUIRED
         return projection
 
     def path_for(self, task_id: str) -> Path:
@@ -453,6 +533,9 @@ class LongTaskStore:
         if task_directory.parent != self.directory:
             raise ValueError("Invalid long Task id")
         return task_directory / "events.jsonl"
+
+    def _lease_path(self, task_id: str) -> Path:
+        return self.path_for(task_id).with_name("execution.lock")
 
     def _apply_event(self, projection: LongTaskProjection, event: LongTaskEvent) -> None:
         payload = event.payload
@@ -503,6 +586,11 @@ class LongTaskStore:
             projection.checkpoints.append(TaskCheckpoint(
                 checkpoint_id=_required_string(payload, "checkpoint_id"),
                 event_cursor=payload.get("event_cursor") if isinstance(payload.get("event_cursor"), str) else None,
+                session_event_cursor=(
+                    payload.get("session_event_cursor")
+                    if isinstance(payload.get("session_event_cursor"), str)
+                    else None
+                ),
                 message_projection=copy.deepcopy(payload.get("message_projection", [])),
                 completed_effect_ids=tuple(_string_list(payload, "completed_effect_ids")),
                 pending_action_ids=tuple(_string_list(payload, "pending_action_ids")),
@@ -554,6 +642,27 @@ class LongTaskStore:
         if projection.status is not LongTaskStatus.RUNNING:
             raise LongTaskStateError(f"Task is not running: {projection.status.value}")
 
+    def _validate_session_cursor(self, projection: LongTaskProjection, session_event_cursor: str) -> str:
+        if self.session_store is None:
+            raise LongTaskStateError("Long Task Session store is not configured")
+        if not isinstance(session_event_cursor, str) or not session_event_cursor.strip():
+            raise ValueError("Checkpoint Session event cursor cannot be empty")
+        if projection.session_id is None or projection.repository_root is None:
+            raise LongTaskStateError("Long Task is missing its Session or repository identity")
+        session = self.session_store.replay(projection.session_id)
+        if session.repository_root != projection.repository_root:
+            raise LongTaskStateError("Checkpoint Session belongs to a different repository")
+        if not any(event.event_id == session_event_cursor for event in session.events):
+            raise LongTaskStateError("Checkpoint Session event cursor does not exist")
+        return session_event_cursor
+
+    @staticmethod
+    def _require_active_lease(task_id: str, lease: LongTaskLease) -> None:
+        if not isinstance(lease, LongTaskLease) or not lease.active:
+            raise LongTaskLeaseError("A live Task execution lease is required before starting an effect")
+        if lease.task_id != LongTaskStore._normalize_task_id(task_id):
+            raise LongTaskLeaseError("Task execution lease belongs to a different Task")
+
     @staticmethod
     def _action(projection: LongTaskProjection, action_id: str) -> LongTaskAction:
         action = projection.actions.get(action_id)
@@ -598,3 +707,34 @@ def _string_list(value: dict[str, Any], key: str) -> list[str]:
     if not isinstance(item, list) or not all(isinstance(element, str) for element in item):
         raise TypeError(f"Long Task event requires string list {key}")
     return item
+
+
+def _lock_file(stream: BinaryIO) -> None:
+    """Acquire one cross-process byte lock; the OS releases it on process exit."""
+
+    stream.seek(0, os.SEEK_END)
+    if stream.tell() == 0:
+        stream.write(b"0")
+        stream.flush()
+        os.fsync(stream.fileno())
+    stream.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_file(stream: BinaryIO) -> None:
+    stream.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
